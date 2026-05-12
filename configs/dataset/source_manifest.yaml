@@ -1,0 +1,58 @@
+generated_on: 2026-05-12
+remote_workspace: /root/TriePilot
+normalized_dir: /root/TriePilot/data/normalized
+sample_ids_dir: /root/TriePilot/data/sample_ids
+sources:
+  instructcoder:
+    status: normalized
+    rows: 1000
+    raw_path: /root/TriePilot/data/raw/instructcoder_valid.json
+    normalized_path: /root/TriePilot/data/normalized/instructcoder.jsonl
+    sample_ids_path: /root/TriePilot/data/sample_ids/instructcoder_seed20260512.json
+    url: https://huggingface.co/datasets/likaixin/InstructCoder/resolve/main/valid.json
+  json_tool:
+    status: normalized
+    rows: 1000
+    raw_path: /root/TriePilot/data/raw/jsonschemabench_data_test.parquet
+    normalized_path: /root/TriePilot/data/normalized/json_tool.jsonl
+    sample_ids_path: /root/TriePilot/data/sample_ids/json_tool_seed20260512.json
+    url: https://huggingface.co/datasets/epfl-dlab/JSONSchemaBench/resolve/main/data/test-00000-of-00001.parquet
+  sharegpt:
+    status: normalized
+    rows: 1000
+    raw_path: /root/sglang_flex_test/datasets/2wiki_sorted_sharegpt_trunc.json
+    normalized_path: /root/TriePilot/data/normalized/sharegpt.jsonl
+    sample_ids_path: /root/TriePilot/data/sample_ids/sharegpt_seed20260512.json
+    note: RAG-derived ShareGPT-format local file from the existing FlexKV dataset cache.
+  gsm8k:
+    status: normalized
+    rows: 1000
+    raw_path: /root/TriePilot/data/raw/gsm8k_test.jsonl
+    normalized_path: /root/TriePilot/data/normalized/gsm8k.jsonl
+    sample_ids_path: /root/TriePilot/data/sample_ids/gsm8k_seed20260512.json
+    url: https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl
+  cnn_dailymail:
+    status: normalized
+    rows: 1000
+    raw_path: /root/TriePilot/data/raw/cnn_dailymail_test.parquet
+    normalized_path: /root/TriePilot/data/normalized/cnn_dailymail.jsonl
+    sample_ids_path: /root/TriePilot/data/sample_ids/cnn_dailymail_seed20260512.json
+    url: https://huggingface.co/datasets/abisee/cnn_dailymail/resolve/main/3.0.0/test-00000-of-00001.parquet
+  random:
+    status: normalized
+    rows: 1000
+    raw_path: synthetic
+    normalized_path: /root/TriePilot/data/normalized/random.jsonl
+    sample_ids_path: /root/TriePilot/data/sample_ids/random_seed20260512.json
+  shared_prefix:
+    status: normalized
+    rows: 1000
+    raw_path: synthetic
+    normalized_path: /root/TriePilot/data/normalized/shared_prefix.jsonl
+    sample_ids_path: /root/TriePilot/data/sample_ids/shared_prefix_seed20260512.json
+  shared_prefix_flexkv:
+    status: normalized
+    rows: 100
+    raw_path: /root/sglang_flex_test/datasets/hotpot50_exactprefix_idx100_20x5.json
+    normalized_path: /root/TriePilot/data/normalized/shared_prefix_flexkv.jsonl
+    sample_ids_path: /root/TriePilot/data/sample_ids/shared_prefix_flexkv_seed20260512.json

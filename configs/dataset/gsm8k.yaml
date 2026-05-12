@@ -4,10 +4,14 @@ paper_role: low_to_medium_ngram_gain
 normalized_path: /root/TriePilot/data/normalized/gsm8k.jsonl
 sample_ids_path: /root/TriePilot/data/sample_ids/gsm8k_seed20260512.json
 source:
-  kind: huggingface_or_user_supplied
+  kind: official_github_jsonl
+  url: https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl
+  raw_path: /root/TriePilot/data/raw/gsm8k_test.jsonl
   expected_fields:
     - question
     - answer
-  local_candidates: []
+  local_candidates:
+    - /root/TriePilot/data/raw/gsm8k_test.jsonl
 notes:
-  - Use GSM8K first; MATH-500 can be added as a math-family variant later.
+  - Use GSM8K test split first; MATH-500 can be added as a math-family variant later.
+  - Normalized to /root/TriePilot/data/normalized/gsm8k.jsonl.

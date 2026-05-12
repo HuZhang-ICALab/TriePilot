@@ -4,10 +4,14 @@ paper_role: high_ngram_gain
 normalized_path: /root/TriePilot/data/normalized/instructcoder.jsonl
 sample_ids_path: /root/TriePilot/data/sample_ids/instructcoder_seed20260512.json
 source:
-  kind: external_or_user_supplied
+  kind: huggingface_raw_json
+  url: https://huggingface.co/datasets/likaixin/InstructCoder/resolve/main/valid.json
+  raw_path: /root/TriePilot/data/raw/instructcoder_valid.json
   expected_fields:
     - prompt
     - reference
-  local_candidates: []
+  local_candidates:
+    - /root/TriePilot/data/raw/instructcoder_valid.json
 notes:
-  - Main code-edit workload. Keep out of the fair table until normalized samples are present.
+  - Main code-edit workload from the validation split.
+  - Normalized to /root/TriePilot/data/normalized/instructcoder.jsonl.

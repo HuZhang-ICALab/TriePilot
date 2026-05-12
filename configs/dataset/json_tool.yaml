@@ -4,10 +4,14 @@ paper_role: structured_output
 normalized_path: /root/TriePilot/data/normalized/json_tool.jsonl
 sample_ids_path: /root/TriePilot/data/sample_ids/json_tool_seed20260512.json
 source:
-  kind: BFCL_or_JSONSchemaBench
+  kind: jsonschemabench_huggingface_parquet
+  url: https://huggingface.co/datasets/epfl-dlab/JSONSchemaBench/resolve/main/data/test-00000-of-00001.parquet
+  raw_path: /root/TriePilot/data/raw/jsonschemabench_data_test.parquet
   expected_fields:
-    - prompt
-    - target_schema
-  local_candidates: []
+    - json_schema
+    - unique_id
+  local_candidates:
+    - /root/TriePilot/data/raw/jsonschemabench_data_test.parquet
 notes:
-  - Represents BFCL or JSONSchemaBench style tool-call and JSON output requests.
+  - First-pass structured-output source uses the JSONSchemaBench aggregate test split.
+  - BFCL remains a discussion/reference candidate unless separately normalized.

@@ -19,5 +19,7 @@ experiments/tmp/
 
 data/normalized/
 data/sample_ids/
+data/raw/
+data/missing/
 runs/
 logs/

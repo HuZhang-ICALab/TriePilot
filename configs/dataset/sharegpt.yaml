@@ -4,7 +4,8 @@ paper_role: real_chat_distribution
 normalized_path: /root/TriePilot/data/normalized/sharegpt.jsonl
 sample_ids_path: /root/TriePilot/data/sample_ids/sharegpt_seed20260512.json
 source:
-  kind: existing_sharegpt_or_external
+  kind: existing_flexkv_sharegpt
+  selected_path: /root/sglang_flex_test/datasets/2wiki_sorted_sharegpt_trunc.json
   expected_fields:
     - conversations
   local_candidates:
@@ -12,4 +13,5 @@ source:
     - /root/sglang_flex_test/datasets/hotpot_10_sorted_sharegpt.json
     - /root/sglang_flex_test/datasets/Macro_sorted_sharegpt.json
 notes:
-  - Existing files are RAG-derived ShareGPT format candidates, not a substitute for final ShareGPT unless documented.
+  - Existing file is RAG-derived ShareGPT format; document this as the first-pass chat-like distribution.
+  - Normalized to /root/TriePilot/data/normalized/sharegpt.jsonl.
