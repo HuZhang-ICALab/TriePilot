@@ -1,0 +1,8 @@
+name: sglang_ngram_default
+family: static_ngram
+frameworks:
+  - sglang
+speculation: ngram
+deployable: true
+fair_table: true
+description: SGLang 0.5.6 default NGRAM speculative decoding settings.

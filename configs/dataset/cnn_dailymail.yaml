@@ -1,0 +1,13 @@
+name: cnn_dailymail
+family: summarization
+paper_role: long_document_generation
+normalized_path: /root/TriePilot/data/normalized/cnn_dailymail.jsonl
+sample_ids_path: /root/TriePilot/data/sample_ids/cnn_dailymail_seed20260512.json
+source:
+  kind: huggingface_or_user_supplied
+  expected_fields:
+    - article
+    - highlights
+  local_candidates: []
+notes:
+  - Keep generation lengths capped in first-pass A100 runs to protect p99 stability.

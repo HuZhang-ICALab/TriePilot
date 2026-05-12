@@ -1,0 +1,9 @@
+name: batch_global_cost_aware
+family: batch_global
+frameworks:
+  - replay
+  - sglang
+speculation: ngram
+deployable: true
+fair_table: true
+description: Select one batch-wide tier using accepted tokens per verified node.

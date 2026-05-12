@@ -1,0 +1,40 @@
+name: a100_main_matrix
+host: root@10.106.17.98
+port: 10022
+workspace: /root/TriePilot
+existing_assets:
+  datasets_root: /root/sglang_flex_test/datasets
+  models_root: /root/sglang_flex_test/models
+conda_envs:
+  sglang: /root/anaconda3/envs/sglang
+  vllm: /root/anaconda3/envs/vllm
+do_not_modify:
+  - /root/anaconda3/envs/sglang
+  - /root/anaconda3/envs/vllm
+  - /root/sglang_flex_test/datasets
+  - /root/sglang_flex_test/models
+models:
+  first_pass:
+    - qwen3_8b
+    - llama3_1_8b_instruct
+  configured_pending_weights:
+    - qwen2_5_7b_instruct
+    - qwen2_5_coder_7b_instruct
+workloads:
+  - homogeneous_main
+  - mixed_binary_main
+  - shift_main
+baseline_methods:
+  - ar_no_spec
+  - sglang_ngram_default
+  - static_ngram_tiers
+  - best_static_per_workload
+  - batch_global_ema
+  - batch_global_cost_aware
+  - bandit_global_tier
+  - equal_budget_allocation
+  - random_budget_allocation
+  - match_depth_greedy
+  - accept_ema_greedy
+  - triepilot_allocation
+  - oracle_allocation

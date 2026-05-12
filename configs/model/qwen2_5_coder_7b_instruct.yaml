@@ -1,0 +1,10 @@
+name: qwen2_5_coder_7b_instruct
+model_id: Qwen/Qwen2.5-Coder-7B-Instruct
+role: code
+size_class: 7b_8b
+preferred_framework: sglang
+remote_path_candidates:
+  - /root/sglang_flex_test/models/Qwen/Qwen2.5-Coder-7B-Instruct
+notes:
+  - Code-workload target from AGENTS section 4.
+  - Add only as a config target until weights are explicitly provided.

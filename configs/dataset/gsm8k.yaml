@@ -1,0 +1,13 @@
+name: gsm8k
+family: math
+paper_role: low_to_medium_ngram_gain
+normalized_path: /root/TriePilot/data/normalized/gsm8k.jsonl
+sample_ids_path: /root/TriePilot/data/sample_ids/gsm8k_seed20260512.json
+source:
+  kind: huggingface_or_user_supplied
+  expected_fields:
+    - question
+    - answer
+  local_candidates: []
+notes:
+  - Use GSM8K first; MATH-500 can be added as a math-family variant later.

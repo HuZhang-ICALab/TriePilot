@@ -1,0 +1,8 @@
+name: random_budget_allocation
+family: request_allocation
+frameworks:
+  - replay
+  - sglang
+deployable: true
+fair_table: true
+description: Random budget assignment under the same B_batch cap and seed.

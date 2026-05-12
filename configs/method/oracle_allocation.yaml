@@ -1,0 +1,7 @@
+name: oracle_allocation
+family: offline_upper_bound
+frameworks:
+  - replay
+deployable: false
+fair_table: true
+description: Offline replay oracle under the same total B_batch constraint.

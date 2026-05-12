@@ -1,0 +1,9 @@
+name: ar_no_spec
+family: serving
+frameworks:
+  - sglang
+  - vllm
+speculation: false
+deployable: true
+fair_table: true
+description: Autoregressive decoding without draft verification.

@@ -1,0 +1,8 @@
+name: accept_ema_greedy
+family: request_allocation
+frameworks:
+  - replay
+  - sglang
+deployable: true
+fair_table: true
+description: Greedy request-level allocation ranked by accepted-length EMA.

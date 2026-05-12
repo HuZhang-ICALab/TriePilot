@@ -1,0 +1,27 @@
+tiers:
+  off:
+    enabled: false
+    draft_tokens: 0
+    max_match_window_size: 0
+    max_bfs_breadth: 0
+  tiny:
+    enabled: true
+    draft_tokens: 4
+    max_match_window_size: 8
+    max_bfs_breadth: 2
+  small:
+    enabled: true
+    draft_tokens: 8
+    max_match_window_size: 12
+    max_bfs_breadth: 4
+  medium:
+    enabled: true
+    draft_tokens: 12
+    max_match_window_size: 16
+    max_bfs_breadth: 6
+  large:
+    enabled: true
+    draft_tokens: 16
+    max_match_window_size: 18
+    max_bfs_breadth: 10
+

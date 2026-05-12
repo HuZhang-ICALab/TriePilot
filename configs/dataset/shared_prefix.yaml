@@ -1,0 +1,12 @@
+name: shared_prefix
+family: shared_prefix
+paper_role: controlled_prefix_pressure
+normalized_path: /root/TriePilot/data/normalized/shared_prefix.jsonl
+sample_ids_path: /root/TriePilot/data/sample_ids/shared_prefix_seed20260512.json
+source:
+  kind: synthetic_or_existing_flexkv
+  local_candidates:
+    - /root/sglang_flex_test/datasets/hotpot50_exactprefix_idx100_20x5.json
+    - /root/sglang_flex_test/datasets/tmp_flexkv_repeat8_hotpot10.json
+notes:
+  - Use for controlled shared-prefix stress, not as a real-user distribution.

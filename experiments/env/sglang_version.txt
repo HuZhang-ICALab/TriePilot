@@ -1,0 +1,5 @@
+source: third_party\sglang_flex
+origin: /root/sglang_flex_test/sglang_flex
+version: 0.5.6.post2
+git: not available in FlexKV local/remote source copy
+

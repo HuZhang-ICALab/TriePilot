@@ -1,0 +1,13 @@
+name: json_tool
+family: json_tool
+paper_role: structured_output
+normalized_path: /root/TriePilot/data/normalized/json_tool.jsonl
+sample_ids_path: /root/TriePilot/data/sample_ids/json_tool_seed20260512.json
+source:
+  kind: BFCL_or_JSONSchemaBench
+  expected_fields:
+    - prompt
+    - target_schema
+  local_candidates: []
+notes:
+  - Represents BFCL or JSONSchemaBench style tool-call and JSON output requests.

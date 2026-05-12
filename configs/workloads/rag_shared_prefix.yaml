@@ -1,0 +1,5 @@
+name: rag_shared_prefix
+shared_prefix: "Context: The following notes describe a system for adaptive NGRAM speculative decoding."
+num_prompts: 8
+max_new_tokens: 64
+

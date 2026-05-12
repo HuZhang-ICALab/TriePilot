@@ -1,0 +1,6 @@
+name: code
+prompts:
+  - "def fibonacci(n):"
+  - "Write a JSON object with keys name, age, city."
+  - "Explain why 2+2=4 in one sentence."
+

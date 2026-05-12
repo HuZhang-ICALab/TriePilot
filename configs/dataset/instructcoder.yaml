@@ -1,0 +1,13 @@
+name: instructcoder
+family: code
+paper_role: high_ngram_gain
+normalized_path: /root/TriePilot/data/normalized/instructcoder.jsonl
+sample_ids_path: /root/TriePilot/data/sample_ids/instructcoder_seed20260512.json
+source:
+  kind: external_or_user_supplied
+  expected_fields:
+    - prompt
+    - reference
+  local_candidates: []
+notes:
+  - Main code-edit workload. Keep out of the fair table until normalized samples are present.

@@ -1,0 +1,7 @@
+name: random
+dataset_name: random
+random_input_len: 64
+random_output_len: 32
+num_prompts: 8
+max_concurrency: 1
+

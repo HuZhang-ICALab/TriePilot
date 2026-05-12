@@ -1,0 +1,8 @@
+|--- seq_len_mean <= 144.00
+|   |--- mean_match_depth <= 0.76
+|   |   |--- class: tiny
+|   |--- mean_match_depth >  0.76
+|   |   |--- class: small
+|--- seq_len_mean >  144.00
+|   |--- class: off
+

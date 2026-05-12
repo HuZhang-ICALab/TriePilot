@@ -1,0 +1,9 @@
+name: bandit_global_tier
+family: batch_global
+frameworks:
+  - replay
+  - sglang
+speculation: ngram
+deployable: true
+fair_table: true
+description: Global tier selection with safe bandit-style exploration.

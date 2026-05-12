@@ -1,0 +1,11 @@
+name: llama3_1_8b_instruct
+model_id: meta-llama/Llama-3.1-8B-Instruct
+role: main
+size_class: 7b_8b
+preferred_framework: sglang
+remote_path_candidates:
+  - /root/sglang_flex_test/models/AI-ModelScope/Llama-3.1-8B-Instruct
+  - /root/sglang_flex_test/models/AI-ModelScope/Llama-3___1-8B-Instruct
+notes:
+  - Present on the A100 host during initial environment audit.
+  - Keep path lookup tolerant because the local mirror has two naming variants.

@@ -1,0 +1,29 @@
+FlexKV alignment reference collected on 2026-05-04.
+
+Local FlexKV directory:
+E:\flexkv
+
+Remote FlexKV source root:
+/root/sglang_flex_test/sglang_flex
+
+Remote conda env:
+sglang-flex
+
+Python:
+3.10.19
+
+SGLang:
+0.5.6.post2
+
+Observed key packages:
+matplotlib==3.10.8
+numpy==2.2.6
+PyYAML==6.0.3
+scikit-learn==1.7.2
+torch==2.9.1
+transformers==4.57.6
+triton==3.5.1
+
+Local reference source:
+third_party\sglang_flex
+

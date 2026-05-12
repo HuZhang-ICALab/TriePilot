@@ -1,0 +1,7 @@
+name: best_static_per_workload
+family: offline_selection
+frameworks:
+  - replay
+deployable: false
+fair_table: true
+description: Post-hoc best static tier per workload, used as a strong tuned baseline.

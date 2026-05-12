@@ -1,0 +1,12 @@
+name: triepilot
+channels:
+  - defaults
+dependencies:
+  - python=3.10.19
+  - pip
+  - pip:
+      - numpy==2.2.6
+      - PyYAML==6.0.3
+      - scikit-learn==1.7.2
+      - matplotlib==3.10.8
+

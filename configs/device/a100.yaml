@@ -1,0 +1,12 @@
+name: a100_40g
+role: main_experiment
+model: Qwen/Qwen2.5-7B-Instruct
+host: 0.0.0.0
+port: 30000
+max_running_requests: 32
+cuda_graph_max_bs: 32
+mem_fraction_static: 0.75
+notes:
+  - Rebuild CUDA/JIT artifacts on this host.
+  - Regenerate all profiles and performance figures here.
+

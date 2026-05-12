@@ -1,0 +1,9 @@
+name: mixed_shift
+segments:
+  - name: code
+    ratio: 0.30
+  - name: rag_shared_prefix
+    ratio: 0.30
+  - name: random
+    ratio: 0.40
+

@@ -1,0 +1,10 @@
+name: qwen3_8b
+model_id: Qwen/Qwen3-8B
+role: main
+size_class: 7b_8b
+preferred_framework: sglang
+remote_path_candidates:
+  - /root/sglang_flex_test/models/Qwen/Qwen3-8B
+notes:
+  - Present on the A100 host during initial environment audit.
+  - Use as the first main-model smoke target because it is already local.

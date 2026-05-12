@@ -1,0 +1,8 @@
+name: equal_budget_allocation
+family: request_allocation
+frameworks:
+  - replay
+  - sglang
+deployable: true
+fair_table: true
+description: Split B_batch evenly across active requests.

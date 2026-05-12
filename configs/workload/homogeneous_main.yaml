@@ -1,0 +1,13 @@
+name: homogeneous_main
+seed: 20260512
+count_per_dataset: 1000
+datasets:
+  - instructcoder
+  - json_tool
+  - sharegpt
+  - gsm8k
+  - cnn_dailymail
+  - random
+outputs:
+  directory: /root/TriePilot/workloads/homogeneous
+  pattern: "{dataset}_only.jsonl"

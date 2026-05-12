@@ -1,0 +1,15 @@
+name: shift_main
+seed: 20260512
+per_phase: 400
+phases:
+  - instructcoder
+  - gsm8k
+  - json_tool
+  - instructcoder
+outputs:
+  path: /root/TriePilot/workloads/shift/code_math_json_code.jsonl
+observables:
+  - strategy_bank_hit_rate
+  - goodput_recovery_time
+  - negative_speedup_ratio
+  - budget_distribution

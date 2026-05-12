@@ -1,0 +1,12 @@
+name: local_3050
+role: development_smoke
+model: Qwen/Qwen2.5-0.5B-Instruct
+host: 127.0.0.1
+port: 30000
+max_running_requests: 1
+cuda_graph_max_bs: 1
+mem_fraction_static: 0.30
+notes:
+  - Use only for smoke tests, instrumentation, and correctness validation.
+  - Do not use local performance numbers for paper conclusions.
+

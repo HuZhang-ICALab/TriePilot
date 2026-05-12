@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "triepilot"
+version = "0.1.0"
+description = "Adaptive NGRAM/Trie speculative decoding experiment scaffold"
+requires-python = ">=3.10,<3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["triepilot*"]
+exclude = ["configs*", "experiments*", "paper*", "scripts*", "tests*", "third_party*"]

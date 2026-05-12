@@ -1,0 +1,22 @@
+name: mixed_binary_main
+seed: 20260512
+count_per_mix: 1200
+ratios:
+  - left: 0.5
+    label: 50_50
+  - left: 0.2
+    label: 20_80
+  - left: 0.8
+    label: 80_20
+pairs:
+  - left: instructcoder
+    right: gsm8k
+  - left: instructcoder
+    right: sharegpt
+  - left: json_tool
+    right: sharegpt
+  - left: cnn_dailymail
+    right: random
+outputs:
+  directory: /root/TriePilot/workloads/mixed
+  pattern: "{left}_{right}_{ratio}.jsonl"

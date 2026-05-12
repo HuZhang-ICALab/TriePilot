@@ -1,0 +1,16 @@
+name: static_ngram_tiers
+family: static_ngram
+frameworks:
+  - sglang
+speculation: ngram
+deployable: true
+fair_table: true
+budget_tiers:
+  - 0
+  - 2
+  - 4
+  - 8
+  - 16
+  - 24
+  - 32
+description: Fixed per-request NGRAM draft-token tiers for static sweeps.

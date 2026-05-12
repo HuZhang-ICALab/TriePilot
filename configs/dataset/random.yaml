@@ -1,0 +1,10 @@
+name: random
+family: negative_control
+paper_role: low_predictability_control
+normalized_path: /root/TriePilot/data/normalized/random.jsonl
+sample_ids_path: /root/TriePilot/data/sample_ids/random_seed20260512.json
+source:
+  kind: synthetic
+  generator: triepilot.data.synthetic_random
+notes:
+  - Can be generated without external downloads.
