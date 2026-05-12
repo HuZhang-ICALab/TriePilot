@@ -538,6 +538,44 @@ Best static：
 
 ---
 
+## 7.4 当前进度标注（2026-05-12）
+
+已完成：
+
+```text
+[x] A100 1 卡服务器清理完成：仅保留 /root/anaconda3/envs/sglang、/root/anaconda3/envs/vllm，以及 /root/sglang_flex_test/datasets、/root/sglang_flex_test/models。
+[x] 新增 /root/TriePilot 工作区，不改动现有 sglang/vllm/triton/model 环境。
+[x] 采集 A100 环境元数据：env.json、pip freeze、models/datasets manifest。
+[x] 确认远端 sglang env：Python 3.10、SGLang 0.5.6.post2；确认 vLLM env 可导入。
+[x] 建立代码管理：推送到 https://github.com/HuZhang-ICALab/TriePilot.git。
+[x] 落地数据源并规范化到 /root/TriePilot/data/normalized：
+    InstructCoder、JSONSchemaBench、ShareGPT-format、GSM8K、CNN/DailyMail、random、shared_prefix。
+[x] 保存 sample ids 到 /root/TriePilot/data/sample_ids，并记录 source manifest。
+[x] 生成 homogeneous / mixed / shift workload JSONL。
+[x] 生成 baseline matrix：/root/TriePilot/matrix/a100_main_matrix_seed20260512.jsonl，共 494 条 run plan。
+[x] 配置第 7.1 节所有主公平基线的 method registry / yaml。
+[x] 本地与远端 unittest 通过；远端 normalized 数据完成 prompt 非空和 sample_id 唯一性检查。
+```
+
+尚未完成：
+
+```text
+[ ] 尚未启动 SGLang server 跑 AR / static NGRAM 端到端 smoke。
+[ ] 尚未执行 Step 0 per-request budget microbenchmark。
+[ ] 尚未插桩 NGRAM 特征与 telemetry。
+[ ] 尚未真正跑 baseline throughput / TPOT / wasted-node 表。
+```
+
+下一步：
+
+```text
+从 Session 1 剩余部分开始：在 A100 上跑通 AR/no-spec 和 static NGRAM default smoke，
+生成第一批 baseline AR result 与 static NGRAM result。随后进入 Step 0 microbenchmark，
+确认 per-request draft-node budget 是否真的降低实际 verification cost。
+```
+
+---
+
 ## 8. 实验步骤规划
 
 ### Step 0：工程可行性 microbenchmark
@@ -941,42 +979,50 @@ SGLang 实现可能受 padding / CUDA graph 约束
 
 ### Session 1：环境与基线
 
+状态（2026-05-12）：部分完成。环境、模型路径、日志目录和 GitHub 管理已完成；AR 与 static NGRAM 端到端结果尚未跑。
+
 任务：
 
 ```text
-固定 SGLang 0.5.6 commit
-跑通 AR
-跑通 static NGRAM default
-准备 Qwen/Llama 8B 模型
-搭建日志目录结构
+[x] 固定并记录 SGLang 0.5.6.post2 环境
+[ ] 跑通 AR
+[ ] 跑通 static NGRAM default
+[x] 准备并记录 Qwen3-8B / Llama-3.1-8B 本地模型候选
+[x] 搭建日志目录结构
 ```
 
 产出：
 
 ```text
-env.json
-baseline AR result
-static NGRAM result
+[x] env.json
+[ ] baseline AR result
+[ ] static NGRAM result
 ```
 
 ### Session 2：数据集与 workload
 
+状态（2026-05-12）：已完成第一版。主数据源已规范化，sample ids 已保存，homogeneous/mixed/shift workload 已生成。
+
 任务：
 
 ```text
-下载并清洗 InstructCoder / ShareGPT / GSM8K / CNN/DailyMail / random
-构造 mixed workload JSONL
-保存 sample ids
+[x] 下载并清洗 InstructCoder / ShareGPT-format / GSM8K / CNN/DailyMail / random
+[x] 下载并清洗 JSONSchemaBench，作为 JSON/tool-call 第一版数据源
+[x] 构造 homogeneous / mixed / shift workload JSONL
+[x] 保存 sample ids
 ```
 
 产出：
 
 ```text
-data/*.jsonl
-workload configs
+[x] data/*.jsonl
+[x] workload configs
+[x] source manifest
 ```
 
 ### Session 3：NGRAM 特征与 telemetry
+
+状态（2026-05-12）：下一阶段待开始。
 
 任务：
 
