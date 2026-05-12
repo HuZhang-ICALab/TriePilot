@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _to_plain_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, tuple):
+        value = list(value)
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _feature_vector(
+    structural_features: list[dict[str, Any]], key: str, batch_size: int
+) -> list[float]:
+    vector = []
+    for index in range(batch_size):
+        feature = (
+            structural_features[index]
+            if index < len(structural_features)
+            and isinstance(structural_features[index], dict)
+            else {}
+        )
+        value = feature.get(key, 0)
+        vector.append(float(value) if isinstance(value, float) else int(value))
+    return vector
+
+
+def _mean(values: list[int | float]) -> float:
+    return float(sum(values) / len(values)) if values else 0.0
+
+
+class TriePilotNgramRecorder:
+    def __init__(self, path: str | Path | None, run_id: str | None = None):
+        self.path = Path(path).expanduser() if path else None
+        self.run_id = run_id or "sglang-ngram"
+        self._fh = None
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = self.path.open("a", encoding="utf-8", buffering=1)
+
+    @property
+    def enabled(self) -> bool:
+        return self._fh is not None
+
+    def record_step(
+        self,
+        *,
+        step_id: int,
+        batch_size: int,
+        request_ids: Any,
+        seq_lens: Any,
+        draft_token_num: int,
+        requested_draft_budgets: Any = None,
+        active_draft_lengths: Any = None,
+        accept_lens: Any,
+        num_accepted_tokens: int,
+        can_run_cuda_graph: bool,
+        timings_ns: dict[str, int],
+        structural_features: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if self._fh is None:
+            return
+
+        budget_list = _to_plain_list(requested_draft_budgets)
+        active_length_list = _to_plain_list(active_draft_lengths)
+        if not budget_list:
+            budget_list = [int(draft_token_num)] * int(batch_size)
+        if not active_length_list:
+            active_length_list = [int(draft_token_num)] * int(batch_size)
+
+        actual_draft_nodes = sum(int(budget) for budget in budget_list)
+        verify_input_tokens = sum(int(length) for length in active_length_list)
+        accepted_tokens = int(num_accepted_tokens)
+        structural_features = structural_features or []
+        match_depths = _feature_vector(
+            structural_features, "match_depth", int(batch_size)
+        )
+        candidate_counts = _feature_vector(
+            structural_features, "candidate_count", int(batch_size)
+        )
+        branch_entropies = _feature_vector(
+            structural_features, "branch_entropy", int(batch_size)
+        )
+        top_branch_ratios = _feature_vector(
+            structural_features, "top_branch_ratio", int(batch_size)
+        )
+        filled_node_counts = _feature_vector(
+            structural_features, "filled_nodes", int(batch_size)
+        )
+        event = {
+            "time_ns": time.time_ns(),
+            "event": "ngram_step",
+            "run_id": self.run_id,
+            "method": "sglang_ngram",
+            "step_id": int(step_id),
+            "batch_size": int(batch_size),
+            "request_ids": _to_plain_list(request_ids),
+            "seq_lens": _to_plain_list(seq_lens),
+            "allocated_budget": actual_draft_nodes,
+            "allocated_budgets": budget_list,
+            "active_draft_lengths": active_length_list,
+            "actual_draft_nodes": actual_draft_nodes,
+            "verify_input_tokens": verify_input_tokens,
+            "verified_nodes": actual_draft_nodes,
+            "accepted_tokens": accepted_tokens,
+            "wasted_nodes": max(actual_draft_nodes - accepted_tokens, 0),
+            "accept_lens": _to_plain_list(accept_lens),
+            "match_depths": match_depths,
+            "candidate_counts": candidate_counts,
+            "branch_entropies": branch_entropies,
+            "top_branch_ratios": top_branch_ratios,
+            "filled_nodes": filled_node_counts,
+            "match_depth": _mean(match_depths),
+            "candidate_count": _mean(candidate_counts),
+            "branch_entropy": _mean(branch_entropies),
+            "top_branch_ratio": _mean(top_branch_ratios),
+            "filled_nodes_mean": _mean(filled_node_counts),
+            "can_run_cuda_graph": bool(can_run_cuda_graph),
+            "ngram_query_time_us": timings_ns.get("ngram_query", 0) / 1000.0,
+            "target_forward_time_us": timings_ns.get("target_forward", 0) / 1000.0,
+            "verify_time_us": timings_ns.get("verify", 0) / 1000.0,
+            "step_latency_us": timings_ns.get("step", 0) / 1000.0,
+        }
+
+        try:
+            self._fh.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        except Exception:
+            logger.exception("Failed to write TriePilot NGRAM telemetry event.")
+
+    def close(self) -> None:
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None

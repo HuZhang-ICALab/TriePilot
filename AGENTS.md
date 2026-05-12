@@ -555,23 +555,103 @@ Best static：
 [x] 生成 baseline matrix：/root/TriePilot/matrix/a100_main_matrix_seed20260512.jsonl，共 494 条 run plan。
 [x] 配置第 7.1 节所有主公平基线的 method registry / yaml。
 [x] 本地与远端 unittest 通过；远端 normalized 数据完成 prompt 非空和 sample_id 唯一性检查。
+[x] A100 上跑通 AR/no-spec 端到端 smoke：Qwen3-8B，SGLang 0.5.6.post2，random-ids，8 prompts，结果保存在
+    /root/TriePilot/runs/20260512_1650_ar_no_spec_random_smoke_seed20260512/raw_events_len32x16.jsonl。
+[x] A100 上跑通 static NGRAM default 端到端 smoke：Qwen3-8B，NGRAM，draft_tokens=8，match_window=12，bfs_breadth=4，
+    random-ids，8 prompts，结果保存在
+    /root/TriePilot/runs/20260512_1715_static_ngram_default_random_smoke_seed20260512/raw_events_len32x16.jsonl。
+[x] 记录并规避 smoke 阻塞点：旧 FlashInfer JIT cache 中残留 /root/anaconda3/envs/sglang-flex include 路径，会导致
+    flashinfer/attention/prefill.cuh 与 flashinfer/page.cuh 找不到；本轮使用 run-local FLASHINFER_WORKSPACE_BASE 生成新 cache。
+[x] 修复 scripts/run_bench.py：dataset_name 以 random 开头时均透传 random-input-len / random-output-len / random-range-ratio，
+    以支持 A100 离线环境下的 random-ids smoke。
+[x] A100 上完成 Step 0 feasibility probe：SGLang 0.5.6.post2 NGRAM 仍是 server-level draft_tokens；
+    /set_internal_state 尝试把 speculative_num_draft_tokens 从 16 改为 8 返回 200，但 server_info 仍为 16；
+    单请求 sampling_params 注入 speculative_num_draft_tokens / triepilot_draft_budget 返回 500。
+[x] A100 上完成 Step 0 全局预算对照 smoke：Qwen3-8B，random-ids，16 prompts，max_concurrency=8，
+    all-16 与 all-8 结果分别保存在
+    /root/TriePilot/runs/20260512_1728_step0_ngram_budget_probe_seed20260512/raw_events_all16_random_ids_len32x16_c8.jsonl
+    和 /root/TriePilot/runs/20260512_1738_step0_ngram_all8_seed20260512/raw_events_all8_random_ids_len32x16_c8.jsonl；
+    汇总结论保存在 /root/TriePilot/runs/20260512_1740_step0_microbenchmark_summary_seed20260512/notes.md。
+[x] 修复工程环境问题：本地建立 .miniconda/envs/triepilot Python 3.10.19 开发环境并安装 requirements-dev；
+    本地 pytest 通过 31 passed / 1 skipped。
+[x] 修复远端工程环境问题：/root/TriePilot 已补成 git checkout，origin 指向
+    https://github.com/HuZhang-ICALab/TriePilot.git；新增项目级 /root/TriePilot/.venv，不改动已有 sglang/vllm conda env；
+    远端 .venv pytest 通过 31 passed / 1 skipped。
+[x] 修复 A100 启动脚本环境问题：scripts/run_server.sh 显式使用 /root/anaconda3/envs/sglang/bin/python、
+    补齐 PATH/PYTHONPATH/HF_ENDPOINT/FLASHINFER_WORKSPACE_BASE；scripts/launch/a100_no_spec.sh 与
+    scripts/launch/a100_ngram_static.sh 统一委托 run_server.sh，避免裸 python 启动时找不到 ninja 或误用旧 FlashInfer cache。
+[x] A100 上完成 SGLang 最小 read-only NGRAM step telemetry patch 与真实 smoke 验证：新增
+    third_party/sglang_flex/python/sglang/srt/speculative/triepilot/recorder.py；
+    ServerArgs 增加 --triepilot-trace-path / --triepilot-run-id；
+    NGRAMWorker.forward_batch_generation 在 target verify 后记录 batch_size、allocated_budget、actual_draft_nodes、
+    verified_nodes、accepted_tokens、wasted_nodes、accept_lens、seq_lens、ngram_query_time_us、verify_time_us、
+    step_latency_us、can_run_cuda_graph 等 JSONL 字段。
+[x] 修复工作区 SGLang 源码与 A100 conda 安装版的 NGRAM 兼容差异：Req 初始化补回 spec_verify_ct /
+    spec_accepted_tokens，避免 NgramVerifyInput.verify 在真实请求上访问缺失字段。
+[x] A100 telemetry patch 测试验证完成：新增 tests/test_sglang_triepilot_telemetry.py，扩展
+    tests/test_launch_scripts.py，并新增 scripts/remote/a100_ngram_telemetry_smoke.sh；A100 上
+    SGLANG_SOURCE_ROOT=/root/TriePilot/third_party/sglang_flex pytest 通过 34 passed / 1 skipped / 2 subtests passed；
+    /root/anaconda3/envs/sglang/bin/python py_compile 覆盖 schedule_batch.py、ngram_worker.py、triepilot/recorder.py、
+    server_args.py。
+[x] A100 上重跑 static NGRAM telemetry smoke：Qwen3-8B，NGRAM，draft_tokens=8，match_window=12，
+    bfs_breadth=4，random-ids，8 prompts，max_concurrency=4，结果保存在
+    /root/TriePilot/runs/20260512_telemetry_ngram_smoke_seed20260512/raw_events_len32x16.jsonl；
+    step telemetry 保存在
+    /root/TriePilot/runs/20260512_telemetry_ngram_smoke_seed20260512/raw_step_events.jsonl，共 54 条事件；
+    首条事件包含 actual_draft_nodes=8、verified_nodes=8、accepted_tokens、wasted_nodes、verify_time_us、
+    step_latency_us、can_run_cuda_graph 等字段。
+[x] A100 上完成 Step 0 最小 per-request active budget mask/slice patch 与 Case A/B/C 验证：新增
+    third_party/sglang_flex/python/sglang/srt/speculative/triepilot/budget.py，NGRAM path 支持从
+    sampling_params.custom_params.triepilot_draft_budget 读取 request-level budget，并在 mixed batch 中构造
+    compact verify input；A100 上 SGLANG_SOURCE_ROOT=/root/TriePilot/third_party/sglang_flex pytest 覆盖
+    test_sglang_triepilot_telemetry.py / test_launch_scripts.py / test_run_bench.py，结果 7 passed /
+    2 subtests passed；/root/anaconda3/envs/sglang/bin/python py_compile 覆盖本次 SGLang patch 文件。
+[x] A100 Step 0 Case A/B/C 真实验证完成：Qwen3-8B，NGRAM server-level draft_tokens=16，8 prompts，
+    结果保存在 /root/TriePilot/runs/20260512_225000_step0_per_request_budget_cases_seed20260512；
+    Case A all-16 首轮 actual_draft_nodes=128、verify_input_tokens=128、can_run_cuda_graph=True、
+    mean verify_time_us=17432.32；Case B half16/half0 首轮 actual_draft_nodes=64、
+    verify_input_tokens=68、can_run_cuda_graph=False、mean verify_time_us=1621.80；Case C heterogeneous
+    首轮 actual_draft_nodes=54、verify_input_tokens=56、can_run_cuda_graph=False、mean verify_time_us=1586.52。
+    结论：per-request budget 已经能减少实际 verified draft nodes；但 Case B/C 进入 non-CUDA-graph runtime path，
+    step_latency 仍受 padding/shape/kernel path 影响，后续主实验必须同时记录 verify_time 与 end-to-end TPOT/p99。
+[x] A100 上完成 Step 1 NGRAM 结构特征插桩第一版：新增
+    third_party/sglang_flex/python/sglang/srt/speculative/triepilot/features.py，
+    从 NGRAM tree mask 记录 match_depths、candidate_counts、branch_entropies、top_branch_ratios、filled_nodes，
+    并在 batch 级记录 match_depth、candidate_count、branch_entropy、top_branch_ratio、filled_nodes_mean。
+    本地目标 pytest 9 passed；A100 上
+    SGLANG_SOURCE_ROOT=/root/TriePilot/third_party/sglang_flex pytest 覆盖
+    test_sglang_triepilot_telemetry.py / test_launch_scripts.py，结果 9 passed；
+    /root/anaconda3/envs/sglang/bin/python py_compile 覆盖 ngram_worker.py、triepilot/recorder.py、triepilot/features.py。
+[x] A100 上完成 Step 1 static NGRAM budget tiers 首轮真实验证：Qwen3-8B，random-ids，16 prompts，
+    max_concurrency=8，request_rate=8，random_input_len=32，random_output_len=16，
+    match_window=12，bfs_breadth=4，branch_length=18，budgets=0/2/4/8/16/24/32。
+    结果保存在 /root/TriePilot/runs/20260512_step1_static_ngram_tiers_random_ids_seed20260512；
+    每个 NGRAM budget 均保存 raw_step_events.jsonl 与 raw_events_len32x16.jsonl，汇总保存在
+    tier_summary.csv 和 notes.md。random-ids 负控制上 accepted_per_verified_node 随 budget 增大下降：
+    budget 2 为 0.1062，4 为 0.0671，8 为 0.0497，16 为 0.0214，24 为 0.0143，32 为 0.0103；
+    mean TPOT 分别约为 AR 18.55ms、budget 8 20.51ms、budget 16 22.35ms、budget 24/32 约 43ms，
+    说明低可预测场景下大 budget 会显著增加 wasted verified nodes 和尾部延迟压力。
 ```
 
 尚未完成：
 
 ```text
-[ ] 尚未启动 SGLang server 跑 AR / static NGRAM 端到端 smoke。
-[ ] 尚未执行 Step 0 per-request budget microbenchmark。
-[ ] 尚未插桩 NGRAM 特征与 telemetry。
-[ ] 尚未真正跑 baseline throughput / TPOT / wasted-node 表。
+[ ] per-request budget 目前是 Step 0 最小 greedy / page_size=1 验证路径，尚未接入正式 allocator、regime features
+    或更复杂 tree shape。
+[ ] Step 1 目前只完成 random-ids 负控制首轮 budget sweep；尚未在 InstructCoder / JSON / ShareGPT /
+    GSM8K / CNN-DailyMail / shared_prefix 等主 workload 上跑完整 static tier library，也尚未 sweep 不同
+    match_window / bfs_breadth / match mode。
+[ ] 尚未跑正式 baseline throughput / TPOT / wasted-node 主表；当前已有 AR、static NGRAM smoke 与
+    random-ids static tier 首轮结果，但还不是完整主表。
 ```
 
 下一步：
 
 ```text
-从 Session 1 剩余部分开始：在 A100 上跑通 AR/no-spec 和 static NGRAM default smoke，
-生成第一批 baseline AR result 与 static NGRAM result。随后进入 Step 0 microbenchmark，
-确认 per-request draft-node budget 是否真的降低实际 verification cost。
+继续 Step 1：把 static NGRAM budget tiers（0/2/4/8/16/24/32）扩展到高收益和真实分布 workload，
+至少覆盖 InstructCoder、JSON/tool-call、ShareGPT、GSM8K、CNN/DailyMail、shared_prefix，并补一组
+match_window / bfs_breadth 配置对照，形成 Pareto tier library；随后进入 Session 5，实现 equal /
+random / match-depth greedy / accept-EMA greedy / batch-global best tier 等 allocator baselines。
 ```
 
 ---
@@ -607,6 +687,20 @@ GPU memory
 
 ```text
 如果减少 per-request nodes 不能降低实际 verify cost，则必须先改 packing / verification path，否则主论文点不成立。
+```
+
+当前验证（2026-05-12）：
+
+```text
+A100 feasibility probe 已确认：SGLang 0.5.6.post2 NGRAM 的 speculative_num_draft_tokens 是 server-level 固定值。
+/set_internal_state 不能实际修改 NGRAM budget；请求级 sampling_params 中加入预算字段会失败。
+因此未打补丁前只能跑 all-16 / all-8 这类全局预算对照，不能完成一半 16/一半 0 或 per-request heterogeneous nodes。
+最小 SGLang NGRAM packing / verification path patch 后，A100 已完成 Case A/B/C：
+Case A all-16 首轮 actual_draft_nodes=128、verify_input_tokens=128、CUDA graph=True；
+Case B half16/half0 首轮 actual_draft_nodes=64、verify_input_tokens=68、CUDA graph=False；
+Case C heterogeneous 首轮 actual_draft_nodes=54、verify_input_tokens=56、CUDA graph=False。
+Case B/C 的 verify_time 明显低于 all-16，但 step_latency 不单调，说明后续实验必须区分 verify compute、
+runtime shape/CUDA graph 行为和端到端 serving latency。
 ```
 
 ### Step 1：静态 NGRAM 与 tier library
@@ -985,8 +1079,8 @@ SGLang 实现可能受 padding / CUDA graph 约束
 
 ```text
 [x] 固定并记录 SGLang 0.5.6.post2 环境
-[ ] 跑通 AR
-[ ] 跑通 static NGRAM default
+[x] 跑通 AR/no-spec 端到端 smoke
+[x] 跑通 static NGRAM default 端到端 smoke
 [x] 准备并记录 Qwen3-8B / Llama-3.1-8B 本地模型候选
 [x] 搭建日志目录结构
 ```
@@ -995,8 +1089,8 @@ SGLang 实现可能受 padding / CUDA graph 约束
 
 ```text
 [x] env.json
-[ ] baseline AR result
-[ ] static NGRAM result
+[x] baseline AR smoke result
+[x] static NGRAM smoke result
 ```
 
 ### Session 2：数据集与 workload
@@ -1022,36 +1116,51 @@ SGLang 实现可能受 padding / CUDA graph 约束
 
 ### Session 3：NGRAM 特征与 telemetry
 
-状态（2026-05-12）：下一阶段待开始。
+状态（2026-05-12）：A100 已完成最小 read-only NGRAM step telemetry patch、单元测试、语法编译和
+static NGRAM telemetry smoke；Step 0 probe 已确认未打补丁时无法表达 per-request budget；最小
+per-request active budget mask/slice patch 已完成并通过 A100 Case A/B/C；Step 1 已补充 NGRAM tree mask
+结构特征插桩并通过 A100 pytest / py_compile / static tiers 首轮验证。
 
 任务：
 
 ```text
-插桩 match_depth / candidate_count / branch_entropy
-记录 accept_len / verified_nodes / latency
+[x] 本地插桩 accept_lens / actual_draft_nodes / verified_nodes / accepted_tokens / wasted_nodes / latency
+[x] A100 static NGRAM telemetry sanity：验证 JSONL 写入与字段语义
+[x] A100 per-request budget Case A/B/C sanity：验证同一 batch 内 all-16、half16/half0、heterogeneous nodes
+[x] 插桩 match_depth / candidate_count / branch_entropy / top_branch_ratio / filled_nodes
 ```
 
 产出：
 
 ```text
-raw_step_events.jsonl
-feature sanity report
+[x] A100 raw_step_events.jsonl：
+    /root/TriePilot/runs/20260512_telemetry_ngram_smoke_seed20260512/raw_step_events.jsonl
+[x] Step 1 feature sanity / static tier trace：
+    /root/TriePilot/runs/20260512_step1_static_ngram_tiers_random_ids_seed20260512/budget_*/raw_step_events.jsonl
+    /root/TriePilot/runs/20260512_step1_static_ngram_tiers_random_ids_seed20260512/tier_summary.csv
+    /root/TriePilot/runs/20260512_step1_static_ngram_tiers_random_ids_seed20260512/notes.md
 ```
 
 ### Session 4：per-request budget microbenchmark
 
+状态（2026-05-12）：已完成未打补丁 feasibility probe、all-16/all-8 全局预算 smoke，以及最小 SGLang
+per-request active budget mask/slice patch；A100 已重跑 Case A/B/C，确认 per-request nodes 可以减少
+actual verified draft nodes，但 heterogeneous path 会离开 CUDA graph。
+
 任务：
 
 ```text
-验证不同 request draft nodes 是否减少实际 verify cost
-确认 padding / shape 行为
+[x] 验证不同 request draft nodes 是否减少实际 verify cost
+[x] 确认 padding / shape / CUDA graph 行为
+[x] 重跑 Case A all-16、Case B 一半 16/一半 0、Case C heterogeneous nodes
 ```
 
 产出：
 
 ```text
-microbenchmark table
-是否继续 V2/V3 的决策
+[x] microbenchmark table：
+    /root/TriePilot/runs/20260512_225000_step0_per_request_budget_cases_seed20260512/notes.md
+[x] 决策：per-request budget 具备继续 V2/V3 的工程基础；后续需要优化/记录 non-CUDA-graph path 对 TPOT/p99 的影响
 ```
 
 ### Session 5：实现简单 allocator baselines

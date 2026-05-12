@@ -57,7 +57,7 @@ def build_command(args: argparse.Namespace) -> list[str]:
     ]
     if args.dataset_path:
         cmd.extend(["--dataset-path", args.dataset_path])
-    if args.dataset_name == "random":
+    if args.dataset_name.startswith("random"):
         cmd.extend(
             [
                 "--random-input-len",
