@@ -21,14 +21,18 @@ fi
 
 export PATH="${CONDA_ENV_PATH}/bin:$(dirname "${CONDA_BIN}"):${PATH}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+WORKSPACE_ROOT="${WORKSPACE_ROOT:-${PWD}}"
 WORKSPACE_SGLANG_SRC="${WORKSPACE_SGLANG_SRC:-${PWD}/third_party/sglang_flex/python}"
 LEGACY_SGLANG_SRC="${LEGACY_SGLANG_SRC:-/root/sglang_flex_test/sglang_flex/python}"
 if [ -n "${PYTHONPATH:-}" ]; then
-  export PYTHONPATH
+  export PYTHONPATH="${WORKSPACE_ROOT}:${WORKSPACE_SGLANG_SRC}:${PYTHONPATH}"
 elif [ -d "${WORKSPACE_SGLANG_SRC}/sglang" ]; then
-  export PYTHONPATH="${WORKSPACE_SGLANG_SRC}"
+  export PYTHONPATH="${WORKSPACE_ROOT}:${WORKSPACE_SGLANG_SRC}"
 else
-  export PYTHONPATH="${LEGACY_SGLANG_SRC}"
+  export PYTHONPATH="${WORKSPACE_ROOT}:${LEGACY_SGLANG_SRC}"
+fi
+if [ -n "${TRIEPILOT_DEBUG_PYTHONPATH:-}" ]; then
+  echo "PYTHONPATH=${PYTHONPATH}"
 fi
 export FLASHINFER_WORKSPACE_BASE="${FLASHINFER_WORKSPACE_BASE:-${PWD}/runs/flashinfer_cache}"
 mkdir -p "${FLASHINFER_WORKSPACE_BASE}"
@@ -49,6 +53,22 @@ fi
 
 if [ -n "${TRIEPILOT_RUN_ID:-}" ]; then
   cmd+=(--triepilot-run-id "${TRIEPILOT_RUN_ID}")
+fi
+
+if [ -n "${TRIEPILOT_ALLOCATION_POLICY:-}" ]; then
+  cmd+=(--triepilot-allocation-policy "${TRIEPILOT_ALLOCATION_POLICY}")
+fi
+
+if [ -n "${TRIEPILOT_BATCH_BUDGET:-}" ]; then
+  cmd+=(--triepilot-batch-budget "${TRIEPILOT_BATCH_BUDGET}")
+fi
+
+if [ -n "${TRIEPILOT_RANDOM_SEED:-}" ]; then
+  cmd+=(--triepilot-random-seed "${TRIEPILOT_RANDOM_SEED}")
+fi
+
+if [ -n "${TRIEPILOT_ACCEPT_EMA_ALPHA:-}" ]; then
+  cmd+=(--triepilot-accept-ema-alpha "${TRIEPILOT_ACCEPT_EMA_ALPHA}")
 fi
 
 if [ "${SPECULATION}" = "ngram" ]; then

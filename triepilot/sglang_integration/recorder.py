@@ -45,6 +45,30 @@ def _mean(values: list[int | float]) -> float:
     return float(sum(values) / len(values)) if values else 0.0
 
 
+def _float_vector(values: Any) -> list[float]:
+    result = []
+    for value in _to_plain_list(values):
+        try:
+            result.append(float(value))
+        except (TypeError, ValueError):
+            result.append(0.0)
+    return result
+
+
+def _int_vector(values: Any) -> list[int]:
+    result = []
+    for value in _to_plain_list(values):
+        try:
+            result.append(int(value))
+        except (TypeError, ValueError):
+            result.append(0)
+    return result
+
+
+def _bool_vector(values: Any) -> list[bool]:
+    return [bool(value) for value in _to_plain_list(values)]
+
+
 class TriePilotNgramRecorder:
     def __init__(self, path: str | Path | None, run_id: str | None = None):
         self.path = Path(path).expanduser() if path else None
@@ -73,6 +97,11 @@ class TriePilotNgramRecorder:
         can_run_cuda_graph: bool,
         timings_ns: dict[str, int],
         structural_features: list[dict[str, Any]] | None = None,
+        allocation_policy: str = "custom",
+        batch_budget: int | None = None,
+        accept_len_emas: Any = None,
+        allocation_metadata: dict[str, Any] | None = None,
+        controller_time_ns: int = 0,
     ) -> None:
         if self._fh is None:
             return
@@ -86,8 +115,10 @@ class TriePilotNgramRecorder:
 
         actual_draft_nodes = sum(int(budget) for budget in budget_list)
         verify_input_tokens = sum(int(length) for length in active_length_list)
+        cuda_graph_expected_tokens = int(batch_size) * int(draft_token_num)
         accepted_tokens = int(num_accepted_tokens)
         structural_features = structural_features or []
+        accept_len_ema_list = _to_plain_list(accept_len_emas)
         match_depths = _feature_vector(
             structural_features, "match_depth", int(batch_size)
         )
@@ -103,24 +134,44 @@ class TriePilotNgramRecorder:
         filled_node_counts = _feature_vector(
             structural_features, "filled_nodes", int(batch_size)
         )
+        allocation_metadata = allocation_metadata or {}
+        strategy_bank_hits = _bool_vector(
+            allocation_metadata.get("strategy_bank_hits", [])
+        )
         event = {
             "time_ns": time.time_ns(),
             "event": "ngram_step",
             "run_id": self.run_id,
             "method": "sglang_ngram",
+            "allocation_policy": allocation_policy,
             "step_id": int(step_id),
             "batch_size": int(batch_size),
             "request_ids": _to_plain_list(request_ids),
             "seq_lens": _to_plain_list(seq_lens),
+            "batch_budget": batch_budget,
+            "draft_token_num": int(draft_token_num),
             "allocated_budget": actual_draft_nodes,
             "allocated_budgets": budget_list,
             "active_draft_lengths": active_length_list,
+            "cuda_graph_expected_tokens": cuda_graph_expected_tokens,
+            "cuda_graph_actual_tokens": verify_input_tokens,
+            "cuda_graph_token_shape_ok": bool(
+                verify_input_tokens == cuda_graph_expected_tokens
+            ),
             "actual_draft_nodes": actual_draft_nodes,
             "verify_input_tokens": verify_input_tokens,
             "verified_nodes": actual_draft_nodes,
             "accepted_tokens": accepted_tokens,
             "wasted_nodes": max(actual_draft_nodes - accepted_tokens, 0),
             "accept_lens": _to_plain_list(accept_lens),
+            "accept_len_emas": accept_len_ema_list,
+            "accept_len_ema": _mean(
+                [
+                    float(value)
+                    for value in accept_len_ema_list
+                    if isinstance(value, (int, float))
+                ]
+            ),
             "match_depths": match_depths,
             "candidate_counts": candidate_counts,
             "branch_entropies": branch_entropies,
@@ -132,6 +183,24 @@ class TriePilotNgramRecorder:
             "top_branch_ratio": _mean(top_branch_ratios),
             "filled_nodes_mean": _mean(filled_node_counts),
             "can_run_cuda_graph": bool(can_run_cuda_graph),
+            "regime_ids": _to_plain_list(allocation_metadata.get("regime_ids", [])),
+            "strategy_bank_hits": strategy_bank_hits,
+            "strategy_bank_hit_rate": _mean(
+                [1.0 if hit else 0.0 for hit in strategy_bank_hits]
+            ),
+            "expected_gain_per_node": _float_vector(
+                allocation_metadata.get("expected_gain_per_node", [])
+            ),
+            "preferred_budgets": _int_vector(
+                allocation_metadata.get("preferred_budgets", [])
+            ),
+            "strategy_confidences": _float_vector(
+                allocation_metadata.get("strategy_confidences", [])
+            ),
+            "exploration_flags": _bool_vector(
+                allocation_metadata.get("exploration_flags", [])
+            ),
+            "controller_time_us": int(controller_time_ns) / 1000.0,
             "ngram_query_time_us": timings_ns.get("ngram_query", 0) / 1000.0,
             "target_forward_time_us": timings_ns.get("target_forward", 0) / 1000.0,
             "verify_time_us": timings_ns.get("verify", 0) / 1000.0,

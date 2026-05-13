@@ -2,12 +2,17 @@
 set -euo pipefail
 
 WORKSPACE="${WORKSPACE:-/root/TriePilot}"
-RUN_ID="${RUN_ID:-20260512_step1_static_ngram_tiers_random_ids_seed20260512}"
+DATASET_NAME="${DATASET_NAME:-random-ids}"
+RUN_ID="${RUN_ID:-20260512_step1_static_ngram_tiers_${DATASET_NAME}_seed20260512}"
 RUN_DIR="${RUN_DIR:-${WORKSPACE}/runs/${RUN_ID}}"
 MODEL_PATH="${MODEL_PATH:-/root/sglang_flex_test/models/Qwen/Qwen3-8B}"
 PORT_BASE="${PORT_BASE:-30100}"
 BUDGETS="0 2 4 8 16 24 32"
 BUDGETS="${TRIEPILOT_STEP1_BUDGETS:-${BUDGETS}}"
+BENCH_DATASET_NAME="${BENCH_DATASET_NAME:-}"
+DATASET_PATH="${DATASET_PATH:-}"
+NORMALIZED_DATASET_PATH="${NORMALIZED_DATASET_PATH:-${WORKSPACE}/data/normalized/${DATASET_NAME}.jsonl}"
+MAX_CONVERTED_ROWS="${MAX_CONVERTED_ROWS:-1000}"
 MATCH_WINDOW="${MATCH_WINDOW:-12}"
 BFS_BREADTH="${BFS_BREADTH:-4}"
 BRANCH_LENGTH="${BRANCH_LENGTH:-18}"
@@ -17,9 +22,108 @@ REQUEST_RATE="${REQUEST_RATE:-8}"
 RANDOM_INPUT_LEN="${RANDOM_INPUT_LEN:-32}"
 RANDOM_OUTPUT_LEN="${RANDOM_OUTPUT_LEN:-16}"
 RANDOM_RANGE_RATIO="${RANDOM_RANGE_RATIO:-0.0}"
+SHAREGPT_OUTPUT_LEN="${SHAREGPT_OUTPUT_LEN:-16}"
+SHAREGPT_CONTEXT_LEN="${SHAREGPT_CONTEXT_LEN:-4096}"
+SEED="${SEED:-20260512}"
 
 mkdir -p "${RUN_DIR}"
 cd "${WORKSPACE}"
+
+if [ -z "${BENCH_DATASET_NAME}" ]; then
+  if [ "${DATASET_NAME}" = "random-ids" ] || [ "${DATASET_NAME}" = "random" ]; then
+    BENCH_DATASET_NAME="${DATASET_NAME}"
+  else
+    BENCH_DATASET_NAME="sharegpt"
+  fi
+fi
+
+if [ -z "${DATASET_PATH}" ] && [ "${BENCH_DATASET_NAME}" = "sharegpt" ]; then
+  DATASET_PATH="${NORMALIZED_DATASET_PATH}"
+fi
+
+BENCH_DATASET_PATH="${DATASET_PATH}"
+if [ "${BENCH_DATASET_NAME}" = "sharegpt" ] && [[ "${DATASET_PATH}" == *.jsonl ]]; then
+  converted_dir="${RUN_DIR}/bench_datasets"
+  converted_path="${converted_dir}/${DATASET_NAME}_sharegpt.json"
+  mkdir -p "${converted_dir}"
+  DATASET_PATH="${DATASET_PATH}" CONVERTED_PATH="${converted_path}" MAX_CONVERTED_ROWS="${MAX_CONVERTED_ROWS}" .venv/bin/python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+
+def _message_content(messages, role):
+    for message in messages or []:
+        if message.get("role") == role or message.get("from") == role:
+            content = message.get("content", message.get("value", ""))
+            if isinstance(content, str) and content.strip():
+                return content
+    return ""
+
+
+def _prompt_from_row(row):
+    prompt = row.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return prompt
+    content = _message_content(row.get("messages"), "user")
+    if content:
+        return content
+    conversations = row.get("conversations") or row.get("conversation") or []
+    if conversations:
+        first = conversations[0]
+        content = first.get("content", first.get("value", ""))
+        if isinstance(content, str) and content.strip():
+            return content
+    return ""
+
+
+def _reference_from_row(row):
+    for key in ("reference", "completion", "answer", "output"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    content = _message_content(row.get("messages"), "assistant")
+    if content:
+        return content
+    conversations = row.get("conversations") or row.get("conversation") or []
+    if len(conversations) >= 2:
+        second = conversations[1]
+        content = second.get("content", second.get("value", ""))
+        if isinstance(content, str) and content.strip():
+            return content
+    return "OK"
+
+
+source = Path(os.environ["DATASET_PATH"])
+target = Path(os.environ["CONVERTED_PATH"])
+limit = int(os.environ["MAX_CONVERTED_ROWS"])
+rows = []
+with source.open(encoding="utf-8") as handle:
+    for line in handle:
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        prompt = _prompt_from_row(row)
+        if not prompt:
+            continue
+        rows.append(
+            {
+                "conversations": [
+                    {"from": "human", "value": prompt},
+                    {"from": "gpt", "value": _reference_from_row(row)},
+                ]
+            }
+        )
+        if len(rows) >= limit:
+            break
+
+if not rows:
+    raise SystemExit(f"no usable prompts found in {source}")
+target.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+print(f"converted {len(rows)} rows from {source} to {target}")
+PY
+  BENCH_DATASET_PATH="${converted_path}"
+fi
 
 SUMMARY_PATH="${RUN_DIR}/tier_summary.csv"
 NOTES_PATH="${RUN_DIR}/notes.md"
@@ -44,7 +148,10 @@ git rev-parse HEAD > "${GIT_COMMIT_PATH}" || true
 {
   echo "run_id: ${RUN_ID}"
   echo "model_path: ${MODEL_PATH}"
-  echo "dataset_name: random-ids"
+  echo "dataset_name: ${DATASET_NAME}"
+  echo "bench_dataset_name: ${BENCH_DATASET_NAME}"
+  echo "dataset_path: ${DATASET_PATH}"
+  echo "bench_dataset_path: ${BENCH_DATASET_PATH}"
   echo "budgets: [${BUDGETS// /, }]"
   echo "match_window: ${MATCH_WINDOW}"
   echo "bfs_breadth: ${BFS_BREADTH}"
@@ -55,6 +162,9 @@ git rev-parse HEAD > "${GIT_COMMIT_PATH}" || true
   echo "random_input_len: ${RANDOM_INPUT_LEN}"
   echo "random_output_len: ${RANDOM_OUTPUT_LEN}"
   echo "random_range_ratio: ${RANDOM_RANGE_RATIO}"
+  echo "sharegpt_output_len: ${SHAREGPT_OUTPUT_LEN}"
+  echo "sharegpt_context_len: ${SHAREGPT_CONTEXT_LEN}"
+  echo "seed: ${SEED}"
 } > "${CONFIG_PATH}"
 
 ENV_PATH="${ENV_PATH}" .venv/bin/python - <<'PY'
@@ -98,7 +208,11 @@ for budget in ${BUDGETS}; do
 
   trace_path="${tier_dir}/raw_step_events.jsonl"
   server_log="${tier_dir}/server.log"
-  bench_output="${tier_dir}/raw_events_len${RANDOM_INPUT_LEN}x${RANDOM_OUTPUT_LEN}.jsonl"
+  if [[ "${BENCH_DATASET_NAME}" == random* ]]; then
+    bench_output="${tier_dir}/raw_events_len${RANDOM_INPUT_LEN}x${RANDOM_OUTPUT_LEN}.jsonl"
+  else
+    bench_output="${tier_dir}/raw_events_${DATASET_NAME}_out${SHAREGPT_OUTPUT_LEN}.jsonl"
+  fi
   rm -f "${trace_path}" "${server_log}" "${bench_output}" "${tier_dir}/server.pid"
   : > "${trace_path}"
 
@@ -144,20 +258,29 @@ for budget in ${BUDGETS}; do
     exit 1
   fi
 
-  .venv/bin/python scripts/run_bench.py \
+  bench_args=(
+    scripts/run_bench.py
     --conda-bin /root/anaconda3/bin/conda \
     --conda-env sglang \
     --host 127.0.0.1 \
     --port "${port}" \
     --model "${MODEL_PATH}" \
-    --dataset-name random-ids \
+    --dataset-name "${BENCH_DATASET_NAME}" \
     --num-prompts "${NUM_PROMPTS}" \
     --max-concurrency "${MAX_CONCURRENCY}" \
     --request-rate "${REQUEST_RATE}" \
     --random-input-len "${RANDOM_INPUT_LEN}" \
     --random-output-len "${RANDOM_OUTPUT_LEN}" \
     --random-range-ratio "${RANDOM_RANGE_RATIO}" \
+    --sharegpt-output-len "${SHAREGPT_OUTPUT_LEN}" \
+    --sharegpt-context-len "${SHAREGPT_CONTEXT_LEN}" \
+    --seed "${SEED}" \
     --output-file "${bench_output}"
+  )
+  if [ -n "${BENCH_DATASET_PATH}" ]; then
+    bench_args+=(--dataset-path "${BENCH_DATASET_PATH}")
+  fi
+  .venv/bin/python "${bench_args[@]}"
 
   cleanup_server
 
@@ -171,7 +294,7 @@ for budget in ${BUDGETS}; do
   fi
 done
 
-SUMMARY_PATH="${SUMMARY_PATH}" NOTES_PATH="${NOTES_PATH}" RUN_DIR="${RUN_DIR}" BUDGETS="${BUDGETS}" .venv/bin/python - <<'PY'
+SUMMARY_PATH="${SUMMARY_PATH}" NOTES_PATH="${NOTES_PATH}" RUN_DIR="${RUN_DIR}" BUDGETS="${BUDGETS}" DATASET_NAME="${DATASET_NAME}" BENCH_DATASET_NAME="${BENCH_DATASET_NAME}" MATCH_WINDOW="${MATCH_WINDOW}" BFS_BREADTH="${BFS_BREADTH}" BRANCH_LENGTH="${BRANCH_LENGTH}" .venv/bin/python - <<'PY'
 import csv
 import json
 import os
@@ -197,6 +320,11 @@ budgets = [int(item) for item in os.environ["BUDGETS"].split()]
 summary_path = Path(os.environ["SUMMARY_PATH"])
 notes_path = Path(os.environ["NOTES_PATH"])
 rows = []
+dataset_name = os.environ["DATASET_NAME"]
+bench_dataset_name = os.environ["BENCH_DATASET_NAME"]
+match_window = int(os.environ["MATCH_WINDOW"])
+bfs_breadth = int(os.environ["BFS_BREADTH"])
+branch_length = int(os.environ["BRANCH_LENGTH"])
 
 for budget in budgets:
     tier_dir = run_dir / f"budget_{budget}"
@@ -212,6 +340,11 @@ for budget in budgets:
     accepted = sum(float(event.get("accepted_tokens", 0)) for event in events)
     wasted = sum(float(event.get("wasted_nodes", 0)) for event in events)
     row = {
+        "dataset_name": dataset_name,
+        "bench_dataset_name": bench_dataset_name,
+        "match_window": match_window,
+        "bfs_breadth": bfs_breadth,
+        "branch_length": branch_length,
         "budget": budget,
         "speculation": "none" if budget == 0 else "ngram",
         "trace_events": len(events),
@@ -253,6 +386,8 @@ notes = [
     "",
     f"Run directory: `{run_dir}`",
     f"Summary: `{summary_path}`",
+    f"Dataset: `{dataset_name}` (`{bench_dataset_name}`)",
+    f"Shape: match_window={match_window}, bfs_breadth={bfs_breadth}, branch_length={branch_length}",
     "",
     "| budget | speculation | out tok/s | mean TPOT ms | p99 TPOT ms | trace events | accepted/verified | wasted ratio | mean verify us | mean match depth | mean candidates |",
     "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",

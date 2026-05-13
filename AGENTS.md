@@ -631,27 +631,146 @@ Best static：
     budget 2 为 0.1062，4 为 0.0671，8 为 0.0497，16 为 0.0214，24 为 0.0143，32 为 0.0103；
     mean TPOT 分别约为 AR 18.55ms、budget 8 20.51ms、budget 16 22.35ms、budget 24/32 约 43ms，
     说明低可预测场景下大 budget 会显著增加 wasted verified nodes 和尾部延迟压力。
+[x] A100 上完成 Step 1 static NGRAM tier library 第一版扩展验证：Qwen3-8B，normalized JSONL
+    通过 runner 临时转换为 SGLang bench_serving 可读的 ShareGPT-style JSON，num_prompts=16，
+    max_concurrency=8，request_rate=8，sharegpt_output_len=16，sharegpt_context_len=4096，
+    budgets=0/2/4/8/16/24/32。覆盖 InstructCoder、JSON/tool-call、ShareGPT、GSM8K、
+    CNN/DailyMail、shared_prefix，并完成两组 tree shape：默认 mw12/b4/branch18 与对照
+    mw24/b8/branch34。正式结果共 12 个 sweep、84 行 combined summary、72 个非零 budget
+    raw_step_events.jsonl；driver 汇总保存在
+    /root/TriePilot/runs/20260512_step1_static_tier_library_driver_seed20260512/combined_tier_summary.csv，
+    notes 保存在 /root/TriePilot/runs/20260512_step1_static_tier_library_driver_seed20260512/notes.md。
+    远端 runner smoke 通过，pytest 覆盖 tests/test_run_bench.py / tests/test_launch_scripts.py，
+    结果 5 passed / 2 subtests passed；正式 driver 未出现 traceback、missing trace、OOM 或 error。
+    第一版短输出/小样本结果显示：所有 dataset/shape 的非零预算中 accepted_per_verified_node 最优均为
+    budget 2；AR/budget 0 在 mean TPOT 和 p99 TPOT 上通常最优，只有 shared_prefix 的 mw24/b8 对照中
+    p99 TPOT 最优为 budget 2。budget 32 的 wasted_node_ratio 在真实 workload 上约 0.986-0.993，
+    shared_prefix 上约 0.968-0.977，说明大 budget 仍显著浪费 verifier nodes；mw24/b8 相比 mw12/b4
+    在 GSM8K、ShareGPT、shared_prefix 等 workload 上略提高 budget 2 的 APV，但短输出配置下尚不足以
+    抵消 TPOT/p99 压力。该结果作为 Pareto tier library 和后续 allocator baseline 的输入，不作为最终主表。
+[x] 进入 Session 5 并完成最小 allocator baseline 实现与 A100 smoke 验证：新增 request-level
+    allocation policy 支持 custom / equal_budget_allocation / random_budget_allocation /
+    match_depth_greedy / accept_ema_greedy；ServerArgs 与 scripts/run_server.sh 增加
+    --triepilot-allocation-policy / --triepilot-batch-budget / --triepilot-random-seed /
+    --triepilot-accept-ema-alpha；NGRAMWorker 在每轮先构造 full-budget NGRAM tree 读取结构特征，
+    再按 policy 切 active draft lengths，并记录 allocation_policy、batch_budget、accept_len_ema。
+[x] 新增 workload materialize 工具与 Session 5 runner：triepilot/workloads/materialize.py、
+    scripts/materialize_workload.py、scripts/remote/a100_session5_allocator_baselines.sh。
+    本地 targeted pytest 通过 15 passed；A100 上
+    SGLANG_SOURCE_ROOT=/root/TriePilot/third_party/sglang_flex pytest 覆盖
+    test_sglang_triepilot_telemetry.py / test_launch_scripts.py / test_workload_materialize.py，
+    结果 15 passed；/root/anaconda3/envs/sglang/bin/python py_compile 覆盖 server_args.py、
+    ngram_worker.py、triepilot/budget.py、triepilot/recorder.py，.venv py_compile 覆盖 materialize 工具。
+[x] A100 上完成 Session 5 allocator baseline smoke：Qwen3-8B，InstructCoder + GSM8K 50/50，
+    16 prompts，max_concurrency=8，request_rate=8，sharegpt_output_len=16，server max draft_tokens=16，
+    B_batch=64；结果保存在
+    /root/TriePilot/runs/20260513_session5_allocator_baselines_smoke_seed20260512，
+    汇总为 allocator_summary.csv，notes.md。运行方法包括 batch_global_budget2、equal_budget_allocation、
+    random_budget_allocation、match_depth_greedy、accept_ema_greedy；driver 内置检查确认 request-level
+    policies 每轮 Σ allocated_budgets ≤ 64，样例 heterogeneous budgets 包括 equal 的
+    [10,9,9,9,9,9,9]、random 的 [13,4,10,2,4,12,4,15]、greedy 的 [16,16,16,16,0,0,0,0]。
+    smoke 结果：batch_global_budget2 mean TPOT=17.53ms、p99 TPOT=19.49ms、APV=0.0598；
+    equal 为 21.06ms / 28.12ms / 0.0259；random 为 21.30ms / 28.77ms / 0.0269；
+    match-depth greedy 为 22.11ms / 28.75ms / 0.0215；accept-EMA greedy 为
+    22.97ms / 30.18ms / 0.0190。结论：baseline allocator plumbing 已经跑通并能产生 batch 内异构预算；
+    但在短输出小样本下，B_batch=64 的 request-level variable path 仍受 non-CUDA-graph / packing path 影响，
+    TPOT 与 wasted-node ratio 劣于全局小 budget=2。该结果是 Session 5 基线基础设施 smoke，不作为最终主表。
+[x] A100 上完成 Session 5 正式 TriePilot allocation 最小实现与路径边界修正：TriePilot 的
+    budget / features / recorder 逻辑已放回项目自身目录
+    /root/TriePilot/triepilot/sglang_integration/{budget.py,features.py,recorder.py}；
+    third_party/sglang_flex 下仅保留必要 SGLang runtime hook（server_args.py 与 ngram_worker.py），
+    ngram_worker.py 从 triepilot.sglang_integration 导入，不再从 sglang.srt.speculative.triepilot 导入。
+[x] 修复 A100 runtime import 路径：scripts/run_server.sh 将 PYTHONPATH 设置为
+    /root/TriePilot:/root/TriePilot/third_party/sglang_flex/python（若外部已有 PYTHONPATH 则前置这两项），
+    确保 SGLang server 真实启动时能 import TriePilot 项目包；远端 dry-run 已确认输出正确 PYTHONPATH。
+[x] A100 上完成搬迁后远端验证：SGLANG_SOURCE_ROOT=/root/TriePilot/third_party/sglang_flex
+    .venv/bin/python -m pytest tests/test_sglang_triepilot_telemetry.py tests/test_launch_scripts.py
+    tests/test_run_bench.py tests/test_workload_materialize.py -q 通过，结果 20 passed / 2 subtests passed；
+    /root/anaconda3/envs/sglang/bin/python py_compile 覆盖 server_args.py、ngram_worker.py、
+    triepilot/sglang_integration/budget.py、features.py、recorder.py；带 conda PATH 的 import 检查输出
+    imports_ok TriePilotStrategyBank TriePilotStrategyBank。
+[x] A100 上完成搬迁后真实 runtime smoke：Qwen3-8B，InstructCoder + GSM8K 50/50，
+    NUM_PROMPTS=4、max_concurrency=2、request_rate=2、sharegpt_output_len=16、B_batch=64、
+    method=triepilot_allocation，结果保存在
+    /root/TriePilot/runs/20260513_session5_post_move_runtime_smoke_seed20260512。
+    验证脚本确认 session5_sweep_summary.csv 1 行、raw_step_events.jsonl 共 50 条事件、regime_ids 与
+    strategy_bank_hit_rate 字段存在、每轮 Σ allocated_budgets ≤ 64、server.log 包含正确 PYTHONPATH、
+    无残留 sglang.launch_server 进程。该 smoke 的 accepted_per_verified_node=0.2，
+    mean TPOT=20.36ms，mean verify_time_us=1550.95，strategy_bank_hit_rate=0.87。
+[x] A100 上完成 Session 5 小型 B_batch 诊断 sweep：Qwen3-8B，InstructCoder+GSM8K 与
+    CNN/DailyMail+random 两组 50/50 mixed workload，NUM_PROMPTS=32、max_concurrency=8、
+    request_rate=8、sharegpt_output_len=32，B_batch=16/32/64，对比 batch_global_budget2、
+    equal_budget_allocation、match_depth_greedy、accept_ema_greedy、triepilot_allocation。
+    结果保存在
+    /root/TriePilot/runs/20260513_0945_session5_bbatch_diagnostic_seed20260512；
+    session5_sweep_summary.csv 共 30 行，raw step trace 共 4342 条事件；远端完整性检查确认
+    missing_files=0、budget_violations=0、driver log 无 Traceback / missing trace / B_batch exceeded /
+    server health error，实验结束后 GPU 回到 1 MiB 且无残留 sglang.launch_server / bench_serving 进程。
+    诊断结果：InstructCoder+GSM8K 上 batch_global_budget2 在 B=16/32/64 的 mean TPOT 与 p99 TPOT
+    均最优（mean 17.69-17.83ms，p99 22.61-22.83ms）；TriePilot verified_nodes 仅 94，
+    APV=0.1170-0.1277、mean verify_time_us≈1.5ms，但 mean TPOT=22.58-23.24ms，说明
+    verify compute 节省尚未转化为端到端收益。CNN/DailyMail+random 上 batch_global_budget2 的
+    mean TPOT 仍最优（35.16-35.35ms）；TriePilot verified_nodes 仅 133/231/241，
+    APV=0.1255-0.1353、mean verify_time_us≈1.5ms，其中 B=16/32 的 p99 TPOT 最优
+    （50.83/49.81ms，对比 batch_global_budget2 的 56.33/56.34ms），但 mean TPOT 仍慢
+    （37.10/37.45/40.25ms）。结论：当前 page_size=1 variable verification path 可以显著减少
+    verified draft nodes 并改善部分长上下文尾部延迟，但 mean TPOT 仍普遍受 non-CUDA-graph /
+    packing / runtime shape 影响；暂不启动全量 mixed workload 主表。
+[x] A100 上完成 Session 5 强静态 batch-global baseline 补强：在相同两组 50/50 诊断 workload 上
+    加入 batch_global_budget4/8/16，并保留 batch_global_budget2 对照；NUM_PROMPTS=32、
+    max_concurrency=8、request_rate=8、sharegpt_output_len=32。结果保存在
+    /root/TriePilot/runs/20260513_1030_session5_batch_global_baseline_seed20260512；
+    session5_sweep_summary.csv 共 8 行。InstructCoder+GSM8K 上 mean TPOT 最优为
+    batch_global_budget8（17.21ms），p99 TPOT 最优为 batch_global_budget2（22.67ms）；
+    CNN/DailyMail+random 上 mean TPOT 最优为 batch_global_budget8（34.51ms），p99 TPOT
+    最优为 batch_global_budget2（56.44ms）。结论：强静态 baseline 不能只用 budget2 表示；
+    mean-optimal 与 tail-optimal static budget 会分离，后续主表至少需要报告 tuned batch-global。
+[x] A100 上完成 variable verification path 根因诊断与 telemetry 加固：runner 支持
+    batch_global_budgetN 正则方法名，summary 新增 mean_target_forward_time_us、
+    mean_ngram_query_time_us、cuda_graph_token_shape_ok_ratio；recorder 新增 draft_token_num、
+    cuda_graph_expected_tokens、cuda_graph_actual_tokens、cuda_graph_token_shape_ok。A100 targeted
+    pytest 通过 17 passed / 2 subtests passed，sglang conda env 下 py_compile 覆盖
+    triepilot/sglang_integration/recorder.py；runtime smoke 保存在
+    /root/TriePilot/runs/20260513_1045_instrumentation_runtime_smoke_seed20260512。该 smoke 显示
+    batch_global_budget2 的 cuda_graph_token_shape_ok_ratio=1.0、mean_target_forward_time_us≈1.0ms；
+    triepilot_allocation 的 cuda_graph_token_shape_ok_ratio=0.0、mean_target_forward_time_us≈19.4ms，
+    而 mean verify_time_us 仍约 1.5ms。结论：variable allocation 当前主要瓶颈不是 verifier
+    post-processing，而是 compact verify input 触发 CUDA graph token-shape mismatch，使 target forward
+    进入慢路径。
 ```
 
 尚未完成：
 
 ```text
-[ ] per-request budget 目前是 Step 0 最小 greedy / page_size=1 验证路径，尚未接入正式 allocator、regime features
-    或更复杂 tree shape。
-[ ] Step 1 目前只完成 random-ids 负控制首轮 budget sweep；尚未在 InstructCoder / JSON / ShareGPT /
-    GSM8K / CNN-DailyMail / shared_prefix 等主 workload 上跑完整 static tier library，也尚未 sweep 不同
-    match_window / bfs_breadth / match mode。
+[ ] per-request budget 已接入最小 allocator baselines，正式 TriePilot regime encoder / Strategy Bank /
+    utility estimator 第一版已能在线运行并写出 telemetry；但仍是 page_size=1 variable verification path，
+    尚未实现 Slow Explorer，也尚未接入更复杂 tree shape。
+[ ] Step 1 已完成第一版 static tier library 与一组 match_window / bfs_breadth 对照；尚未做 match mode
+    sweep、更长输出长度、更大样本数、多随机种子或正式主表规模复跑。
+[ ] Session 5 已完成 InstructCoder+GSM8K 与 CNN/DailyMail+random 两组 50/50 的小型
+    B_batch=16/32/64 诊断 sweep，并已补强 batch_global_budget2/4/8/16 强静态 baseline；
+    尚未覆盖四组 mixed pairs、20/80 与 80/20、B_batch=100/160、更长输出、更大样本、
+    多 seed 或正式 baseline 主表。
 [ ] 尚未跑正式 baseline throughput / TPOT / wasted-node 主表；当前已有 AR、static NGRAM smoke 与
-    random-ids static tier 首轮结果，但还不是完整主表。
+    random-ids / main workload static tier 第一版结果，以及 Session 5 allocator smoke，但还不是完整主表。
 ```
 
 下一步：
 
 ```text
-继续 Step 1：把 static NGRAM budget tiers（0/2/4/8/16/24/32）扩展到高收益和真实分布 workload，
-至少覆盖 InstructCoder、JSON/tool-call、ShareGPT、GSM8K、CNN/DailyMail、shared_prefix，并补一组
-match_window / bfs_breadth 配置对照，形成 Pareto tier library；随后进入 Session 5，实现 equal /
-random / match-depth greedy / accept-EMA greedy / batch-global best tier 等 allocator baselines。
+继续 Session 5：不要直接启动全量 360 次 mixed workload 主表。下一步优先优化 SGLang variable
+verification runtime path，核心目标是让 per-request heterogeneous budget 尽量保持 CUDA graph 可用，
+或至少避免 compact verify input 触发的 target_forward 慢路径。候选方向包括：按有效 draft length
+做 shape bucket、对 variable allocation 做 graph-compatible padding / mask、将 request-level budget
+映射到少数 batch-global-like micro batches，或在 Strategy Bank 中加入 graph-safety penalty，避免
+收益不足时走慢路径。优化验证标准：在保持 verified draft nodes 明显下降的前提下，复跑
+20260513_0945_session5_bbatch_diagnostic_seed20260512 同构诊断，观察
+cuda_graph_token_shape_ok_ratio、mean_target_forward_time_us、mean TPOT 和 p99 TPOT 是否同时改善。
+只有该路径问题缓解后，再扩展到四组 mixed workload、50/50+20/80+80/20、
+B_batch=16/32/64/100/160 的正式主表。CNN/DailyMail+random 上 TriePilot 在 B=16/32 的
+p99 TPOT 已有改善信号，应作为长上下文尾部延迟重点观察项；强静态 baseline 需同时报告
+batch_global_budget2/4/8/16 或 tuned best-static。Step 1 的 match mode、长输出、多 seed 仍作为
+主表复跑前的稳健性补充。
 ```
 
 ---
@@ -1119,7 +1238,8 @@ SGLang 实现可能受 padding / CUDA graph 约束
 状态（2026-05-12）：A100 已完成最小 read-only NGRAM step telemetry patch、单元测试、语法编译和
 static NGRAM telemetry smoke；Step 0 probe 已确认未打补丁时无法表达 per-request budget；最小
 per-request active budget mask/slice patch 已完成并通过 A100 Case A/B/C；Step 1 已补充 NGRAM tree mask
-结构特征插桩并通过 A100 pytest / py_compile / static tiers 首轮验证。
+结构特征插桩并通过 A100 pytest / py_compile / static tiers 首轮验证，且已把 static tier library 扩展到
+6 个主 workload 与一组 mw24/b8 tree shape 对照。
 
 任务：
 
@@ -1128,6 +1248,8 @@ per-request active budget mask/slice patch 已完成并通过 A100 Case A/B/C；
 [x] A100 static NGRAM telemetry sanity：验证 JSONL 写入与字段语义
 [x] A100 per-request budget Case A/B/C sanity：验证同一 batch 内 all-16、half16/half0、heterogeneous nodes
 [x] 插桩 match_depth / candidate_count / branch_entropy / top_branch_ratio / filled_nodes
+[x] 插桩 target_forward_time_us 与 CUDA graph token-shape 字段：
+    draft_token_num、cuda_graph_expected_tokens、cuda_graph_actual_tokens、cuda_graph_token_shape_ok
 ```
 
 产出：
@@ -1139,6 +1261,12 @@ per-request active budget mask/slice patch 已完成并通过 A100 Case A/B/C；
     /root/TriePilot/runs/20260512_step1_static_ngram_tiers_random_ids_seed20260512/budget_*/raw_step_events.jsonl
     /root/TriePilot/runs/20260512_step1_static_ngram_tiers_random_ids_seed20260512/tier_summary.csv
     /root/TriePilot/runs/20260512_step1_static_ngram_tiers_random_ids_seed20260512/notes.md
+[x] Step 1 main workload static tier library：
+    /root/TriePilot/runs/20260512_step1_static_tier_library_driver_seed20260512/combined_tier_summary.csv
+    /root/TriePilot/runs/20260512_step1_static_tier_library_driver_seed20260512/notes.md
+[x] Session 5 CUDA graph / target-forward diagnostic smoke：
+    /root/TriePilot/runs/20260513_1045_instrumentation_runtime_smoke_seed20260512/session5_sweep_summary.csv
+    /root/TriePilot/runs/20260513_1045_instrumentation_runtime_smoke_seed20260512/*/raw_step_events.jsonl
 ```
 
 ### Session 4：per-request budget microbenchmark
@@ -1168,17 +1296,30 @@ actual verified draft nodes，但 heterogeneous path 会离开 CUDA graph。
 任务：
 
 ```text
-equal allocation
-random allocation
-match-depth greedy
-accept-EMA greedy
-batch-global best tier
+[x] equal allocation
+[x] random allocation
+[x] match-depth greedy
+[x] accept-EMA greedy
+[x] TriePilot allocation 第一版：Regime Encoder / Strategy Bank / Utility Estimator / Greedy Budget Allocator
+[x] batch-global tuned tier 第一版：batch_global_budget2/4/8/16
+[x] 小型 B_batch 诊断 sweep：InstructCoder+GSM8K、CNN/DailyMail+random，B_batch=16/32/64
+[ ] variable verification runtime path 优化：CUDA graph shape / target_forward 慢路径
+[ ] 正式 mixed workload 主表：四组 mixed pairs、三组比例、多 B_batch、多 seed
 ```
 
 产出：
 
 ```text
-baseline allocation results
+[x] allocator smoke：
+    /root/TriePilot/runs/20260513_session5_allocator_baselines_smoke_seed20260512/allocator_summary.csv
+[x] TriePilot post-move runtime smoke：
+    /root/TriePilot/runs/20260513_session5_post_move_runtime_smoke_seed20260512/session5_sweep_summary.csv
+[x] B_batch diagnostic sweep：
+    /root/TriePilot/runs/20260513_0945_session5_bbatch_diagnostic_seed20260512/session5_sweep_summary.csv
+[x] strong batch-global baseline：
+    /root/TriePilot/runs/20260513_1030_session5_batch_global_baseline_seed20260512/session5_sweep_summary.csv
+[x] CUDA graph / target-forward diagnostic：
+    /root/TriePilot/runs/20260513_1045_instrumentation_runtime_smoke_seed20260512/session5_sweep_summary.csv
 ```
 
 ### Session 6：实现 TriePilot

@@ -21,6 +21,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--random-input-len", type=int, default=512)
     parser.add_argument("--random-output-len", type=int, default=256)
     parser.add_argument("--random-range-ratio", type=float, default=0.5)
+    parser.add_argument("--sharegpt-output-len", type=int)
+    parser.add_argument("--sharegpt-context-len", type=int)
+    parser.add_argument("--seed", type=int, default=20260512)
     parser.add_argument("--output-file", required=True)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -54,6 +57,8 @@ def build_command(args: argparse.Namespace) -> list[str]:
         "--output-file",
         args.output_file,
         "--output-details",
+        "--seed",
+        str(args.seed),
     ]
     if args.dataset_path:
         cmd.extend(["--dataset-path", args.dataset_path])
@@ -68,6 +73,11 @@ def build_command(args: argparse.Namespace) -> list[str]:
                 str(args.random_range_ratio),
             ]
         )
+    if args.dataset_name == "sharegpt":
+        if args.sharegpt_output_len is not None:
+            cmd.extend(["--sharegpt-output-len", str(args.sharegpt_output_len)])
+        if args.sharegpt_context_len is not None:
+            cmd.extend(["--sharegpt-context-len", str(args.sharegpt_context_len)])
     return cmd
 
 

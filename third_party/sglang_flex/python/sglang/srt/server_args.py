@@ -445,6 +445,10 @@ class ServerArgs:
     speculative_ngram_capacity: int = 10 * 1000 * 1000
     triepilot_trace_path: Optional[str] = None
     triepilot_run_id: Optional[str] = None
+    triepilot_allocation_policy: str = "custom"
+    triepilot_batch_budget: int = -1
+    triepilot_random_seed: int = 20260512
+    triepilot_accept_ema_alpha: float = 0.20
 
     # Expert parallelism
     ep_size: int = 1
@@ -3473,6 +3477,38 @@ class ServerArgs:
             type=str,
             default=ServerArgs.triepilot_run_id,
             help="Optional run id stored in TriePilot NGRAM telemetry events.",
+        )
+        parser.add_argument(
+            "--triepilot-allocation-policy",
+            type=str,
+            default=ServerArgs.triepilot_allocation_policy,
+            choices=[
+                "custom",
+                "equal_budget_allocation",
+                "random_budget_allocation",
+                "match_depth_greedy",
+                "accept_ema_greedy",
+                "triepilot_allocation",
+            ],
+            help="Optional request-level TriePilot NGRAM budget allocation policy.",
+        )
+        parser.add_argument(
+            "--triepilot-batch-budget",
+            type=int,
+            default=ServerArgs.triepilot_batch_budget,
+            help="Total draft-node budget for request-level TriePilot allocation. Negative means no cap.",
+        )
+        parser.add_argument(
+            "--triepilot-random-seed",
+            type=int,
+            default=ServerArgs.triepilot_random_seed,
+            help="Seed used by randomized TriePilot allocation baselines.",
+        )
+        parser.add_argument(
+            "--triepilot-accept-ema-alpha",
+            type=float,
+            default=ServerArgs.triepilot_accept_ema_alpha,
+            help="EMA update factor for accept-EMA TriePilot allocation baselines.",
         )
 
         # Expert parallelism

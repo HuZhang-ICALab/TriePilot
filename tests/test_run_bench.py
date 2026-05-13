@@ -21,6 +21,9 @@ class RunBenchCommandTest(unittest.TestCase):
             random_input_len=32,
             random_output_len=16,
             random_range_ratio=0.25,
+            sharegpt_output_len=None,
+            sharegpt_context_len=None,
+            seed=20260512,
             output_file="/tmp/out.jsonl",
             dry_run=False,
         )
@@ -34,6 +37,23 @@ class RunBenchCommandTest(unittest.TestCase):
         self.assertIn("16", cmd)
         self.assertIn("--random-range-ratio", cmd)
         self.assertIn("0.25", cmd)
+
+    def test_sharegpt_datasets_forward_length_and_seed_arguments(self):
+        args = self._args("sharegpt")
+        args.dataset_path = "/tmp/sharegpt.json"
+        args.sharegpt_output_len = 16
+        args.sharegpt_context_len = 4096
+
+        cmd = build_command(args)
+
+        self.assertIn("--dataset-path", cmd)
+        self.assertIn("/tmp/sharegpt.json", cmd)
+        self.assertIn("--sharegpt-output-len", cmd)
+        self.assertIn("16", cmd)
+        self.assertIn("--sharegpt-context-len", cmd)
+        self.assertIn("4096", cmd)
+        self.assertIn("--seed", cmd)
+        self.assertIn("20260512", cmd)
 
 
 if __name__ == "__main__":

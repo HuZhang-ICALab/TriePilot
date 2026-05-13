@@ -17,9 +17,14 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.cpp_ngram.ngram_cache import NgramCache
 from sglang.srt.speculative.ngram_info import NgramVerifyInput
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
-from sglang.srt.speculative.triepilot.budget import resolve_triepilot_draft_budgets
-from sglang.srt.speculative.triepilot.features import compute_ngram_tree_features
-from sglang.srt.speculative.triepilot.recorder import TriePilotNgramRecorder
+from triepilot.sglang_integration.budget import (
+    TriePilotStrategyBank,
+    observe_triepilot_accept_lengths,
+    observe_triepilot_strategy_feedback,
+    resolve_triepilot_draft_budgets,
+)
+from triepilot.sglang_integration.features import compute_ngram_tree_features
+from triepilot.sglang_integration.recorder import TriePilotNgramRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,15 @@ class NGRAMWorker:
         )
         self.triepilot_step_id = 0
         self.triepilot_structural_features = None
+        self.triepilot_allocation_metadata = None
+        self.triepilot_controller_time_ns = 0
+        self.triepilot_allocation_policy = server_args.triepilot_allocation_policy
+        self.triepilot_batch_budget = server_args.triepilot_batch_budget
+        self.triepilot_random_seed = server_args.triepilot_random_seed
+        self.triepilot_accept_ema_alpha = server_args.triepilot_accept_ema_alpha
+        self.triepilot_strategy_bank = TriePilotStrategyBank(
+            server_args.speculative_num_draft_tokens
+        )
         self.triepilot_recorder = TriePilotNgramRecorder(
             server_args.triepilot_trace_path,
             server_args.triepilot_run_id,
@@ -228,13 +242,6 @@ class NGRAMWorker:
             return
 
         bs = batch.batch_size()
-        requested_draft_budgets, active_draft_lengths = (
-            resolve_triepilot_draft_budgets(batch.reqs, self.draft_token_num)
-        )
-        has_variable_budget = any(
-            length != self.draft_token_num for length in active_draft_lengths
-        )
-
         retrive_index = self.retrieve_indexes_batch[bs]
         retrive_next_token = self.retrive_next_token_batch[bs]
         retrive_next_sibling = self.retrive_next_sibling_batch[bs]
@@ -243,6 +250,34 @@ class NGRAMWorker:
         draft_tokens = self.draft_tokens_batch[bs]
 
         req_drafts, mask = self._prepare_draft_tokens(batch)
+        full_structural_features = compute_ngram_tree_features(
+            req_drafts=req_drafts,
+            mask=mask,
+            draft_token_num=self.draft_token_num,
+            active_draft_lengths=[self.draft_token_num] * bs,
+        )
+        controller_start_ns = time.perf_counter_ns()
+        (
+            requested_draft_budgets,
+            active_draft_lengths,
+            self.triepilot_allocation_metadata,
+        ) = resolve_triepilot_draft_budgets(
+            batch.reqs,
+            self.draft_token_num,
+            allocation_policy=self.triepilot_allocation_policy,
+            batch_budget=self.triepilot_batch_budget,
+            structural_features=full_structural_features,
+            step_id=self.triepilot_step_id,
+            random_seed=self.triepilot_random_seed,
+            strategy_bank=self.triepilot_strategy_bank,
+            return_metadata=True,
+        )
+        self.triepilot_controller_time_ns = (
+            time.perf_counter_ns() - controller_start_ns
+        )
+        has_variable_budget = any(
+            length != self.draft_token_num for length in active_draft_lengths
+        )
         self.triepilot_structural_features = compute_ngram_tree_features(
             req_drafts=req_drafts,
             mask=mask,
@@ -438,6 +473,22 @@ class NGRAMWorker:
             verify_done_ns = time.perf_counter_ns()
             # Store accept_lens for per-request metrics
             accept_lens = verify_input.accept_length
+            accept_len_emas = observe_triepilot_accept_lengths(
+                batch.reqs,
+                accept_lens,
+                alpha=self.triepilot_accept_ema_alpha,
+            )
+            observe_triepilot_strategy_feedback(
+                batch.reqs,
+                strategy_bank=self.triepilot_strategy_bank,
+                allocation_metadata=self.triepilot_allocation_metadata,
+                requested_draft_budgets=getattr(
+                    verify_input, "requested_draft_budgets", None
+                ),
+                accept_lens=accept_lens,
+                alpha=self.triepilot_accept_ema_alpha,
+                step_id=self.triepilot_step_id,
+            )
             if batch.return_logprob:
                 self.add_logprob_values(batch, verify_input, logits_output)
             self._update_ngram_cache(batch)
@@ -465,6 +516,11 @@ class NGRAMWorker:
                         "step": verify_done_ns - step_start_ns,
                     },
                     structural_features=self.triepilot_structural_features,
+                    allocation_policy=self.triepilot_allocation_policy,
+                    batch_budget=self.triepilot_batch_budget,
+                    accept_len_emas=accept_len_emas,
+                    allocation_metadata=self.triepilot_allocation_metadata,
+                    controller_time_ns=self.triepilot_controller_time_ns,
                 )
                 self.triepilot_step_id += 1
 
