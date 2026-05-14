@@ -449,6 +449,8 @@ class ServerArgs:
     triepilot_batch_budget: int = -1
     triepilot_random_seed: int = 20260512
     triepilot_accept_ema_alpha: float = 0.20
+    triepilot_shape_buckets: str = ""
+    triepilot_shape_bucket_mode: Literal["off", "compact", "batch_max"] = "off"
 
     # Expert parallelism
     ep_size: int = 1
@@ -3509,6 +3511,19 @@ class ServerArgs:
             type=float,
             default=ServerArgs.triepilot_accept_ema_alpha,
             help="EMA update factor for accept-EMA TriePilot allocation baselines.",
+        )
+        parser.add_argument(
+            "--triepilot-shape-buckets",
+            type=str,
+            default=ServerArgs.triepilot_shape_buckets,
+            help="Comma-separated TriePilot active-length buckets for NGRAM shape-bucket verification.",
+        )
+        parser.add_argument(
+            "--triepilot-shape-bucket-mode",
+            type=str,
+            default=ServerArgs.triepilot_shape_bucket_mode,
+            choices=["off", "compact", "batch_max"],
+            help="TriePilot shape-bucket runtime mode. batch_max pads a batch to one bucket shape.",
         )
 
         # Expert parallelism

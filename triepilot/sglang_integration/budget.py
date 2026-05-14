@@ -5,6 +5,7 @@ from typing import Any, Iterable
 TRIEPILOT_DRAFT_BUDGET_KEY = "triepilot_draft_budget"
 TRIEPILOT_ACCEPT_EMA_ATTR = "triepilot_accept_len_ema"
 TRIEPILOT_NEGATIVE_GAIN_ATTR = "triepilot_negative_gain_count"
+TRIEPILOT_DEFAULT_SHAPE_BUCKETS = (2, 4, 8, 16)
 
 CUSTOM_POLICY_NAMES = {"", "custom", "custom_params", "per_request_custom"}
 REQUEST_ALLOCATION_POLICIES = {
@@ -179,6 +180,105 @@ def _effective_batch_budget(
 
 def _active_lengths_from_budgets(budgets: list[int]) -> list[int]:
     return [max(int(budget), 1) for budget in budgets]
+
+
+def parse_triepilot_shape_buckets(
+    bucket_spec: str | Iterable[int] | None,
+    *,
+    max_budget: int,
+) -> tuple[int, ...]:
+    """Parse graph-compatible active lengths for shape-bucket verification."""
+    max_budget = max(int(max_budget), 1)
+    if bucket_spec is None:
+        raw_values: list[Any] = list(TRIEPILOT_DEFAULT_SHAPE_BUCKETS)
+    elif isinstance(bucket_spec, str):
+        stripped = bucket_spec.strip()
+        if not stripped or stripped.lower() in {"off", "none", "disabled", "false"}:
+            return ()
+        if stripped.lower() == "default":
+            raw_values = list(TRIEPILOT_DEFAULT_SHAPE_BUCKETS)
+        else:
+            raw_values = [
+                item.strip()
+                for item in stripped.replace(";", ",").replace(" ", ",").split(",")
+                if item.strip()
+            ]
+    else:
+        raw_values = list(bucket_spec)
+
+    values: set[int] = set()
+    for raw_value in raw_values:
+        if isinstance(raw_value, str) and raw_value in {"0/1", "0"}:
+            continue
+        else:
+            try:
+                value = int(raw_value)
+            except (TypeError, ValueError):
+                continue
+        value = min(max(value, 1), max_budget)
+        values.add(value)
+
+    return tuple(sorted(values))
+
+
+def _ceil_to_bucket(value: int, buckets: tuple[int, ...], max_budget: int) -> int:
+    if value <= 0:
+        return 0
+    for bucket in buckets:
+        if bucket >= value:
+            return min(int(bucket), int(max_budget))
+    return int(max_budget)
+
+
+def bucketize_triepilot_draft_budgets(
+    requested_budgets: Iterable[Any],
+    *,
+    default_budget: int,
+    bucket_spec: str | Iterable[int] | None = None,
+) -> dict[str, list[Any]]:
+    """Round request budgets to a small graph-compatible bucket set.
+
+    Budget 0 keeps one active target token for normal decoding but contributes
+    zero logical draft nodes.
+    """
+    max_budget = max(int(default_budget), 1)
+    buckets = parse_triepilot_shape_buckets(bucket_spec, max_budget=max_budget)
+    if not buckets:
+        requested = [
+            min(max(_coerce_budget(value, max_budget), 0), max_budget)
+            for value in requested_budgets
+        ]
+        return {
+            "requested_budgets": requested,
+            "bucketed_budgets": requested,
+            "active_draft_lengths": _active_lengths_from_budgets(requested),
+            "bucket_ids": ["0/1" if budget <= 0 else str(budget) for budget in requested],
+            "bucket_padding_nodes": [0] * len(requested),
+        }
+
+    requested_budgets_list: list[int] = []
+    bucketed_budgets: list[int] = []
+    active_draft_lengths: list[int] = []
+    bucket_ids: list[str] = []
+    bucket_padding_nodes: list[int] = []
+
+    for raw_budget in requested_budgets:
+        requested = min(max(_coerce_budget(raw_budget, max_budget), 0), max_budget)
+        bucketed = _ceil_to_bucket(requested, buckets, max_budget)
+        active_length = max(bucketed, 1)
+        requested_budgets_list.append(requested)
+        bucketed_budgets.append(bucketed)
+        active_draft_lengths.append(active_length)
+        bucket_ids.append("0/1" if bucketed <= 0 else str(bucketed))
+        bucket_padding_nodes.append(max(bucketed - requested, 0))
+
+    return {
+        "requested_budgets": requested_budgets_list,
+        "bucketed_budgets": bucketed_budgets,
+        "active_draft_lengths": active_draft_lengths,
+        "bucket_ids": bucket_ids,
+        "bucket_padding_nodes": bucket_padding_nodes,
+    }
 
 
 def _allocate_equal(batch_size: int, max_budget: int, total_budget: int) -> list[int]:

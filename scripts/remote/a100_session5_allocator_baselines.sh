@@ -18,6 +18,12 @@ BFS_BREADTH="${BFS_BREADTH:-4}"
 BRANCH_LENGTH="${BRANCH_LENGTH:-18}"
 MAX_DRAFT_TOKENS="${MAX_DRAFT_TOKENS:-16}"
 BATCH_GLOBAL_DRAFT_TOKENS="${BATCH_GLOBAL_DRAFT_TOKENS:-2}"
+TRIEPILOT_SHAPE_BUCKETS="${TRIEPILOT_SHAPE_BUCKETS:-}"
+TRIEPILOT_SHAPE_BUCKET_MODE="${TRIEPILOT_SHAPE_BUCKET_MODE:-off}"
+CUDA_GRAPH_MAX_BS="${CUDA_GRAPH_MAX_BS:-32}"
+MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-32}"
+MATERIALIZE_FILL_FILTERED="${MATERIALIZE_FILL_FILTERED:-1}"
+MATERIALIZE_TOKENIZER_MODEL="${MATERIALIZE_TOKENIZER_MODEL:-${MODEL_PATH}}"
 SEED="${SEED:-20260512}"
 PORT_BASE="${PORT_BASE:-30300}"
 METHODS="${TRIEPILOT_SESSION5_METHODS:-batch_global_budget2 equal_budget_allocation random_budget_allocation match_depth_greedy accept_ema_greedy triepilot_allocation}"
@@ -50,6 +56,12 @@ git rev-parse HEAD > "${GIT_COMMIT_PATH}" || true
   echo "branch_length: ${BRANCH_LENGTH}"
   echo "max_draft_tokens: ${MAX_DRAFT_TOKENS}"
   echo "batch_global_draft_tokens: ${BATCH_GLOBAL_DRAFT_TOKENS}"
+  echo "triepilot_shape_buckets: ${TRIEPILOT_SHAPE_BUCKETS}"
+  echo "triepilot_shape_bucket_mode: ${TRIEPILOT_SHAPE_BUCKET_MODE}"
+  echo "cuda_graph_max_bs: ${CUDA_GRAPH_MAX_BS}"
+  echo "max_running_requests: ${MAX_RUNNING_REQUESTS}"
+  echo "materialize_fill_filtered: ${MATERIALIZE_FILL_FILTERED}"
+  echo "materialize_tokenizer_model: ${MATERIALIZE_TOKENIZER_MODEL}"
   echo "methods: [${METHODS// /, }]"
   echo "seed: ${SEED}"
 } > "${CONFIG_PATH}"
@@ -141,6 +153,10 @@ run_method() {
   export TRIEPILOT_RUN_ID="${RUN_ID}_${left_dataset}_${right_dataset}_r${left_ratio}_B${b_batch}_${method}"
   export TRIEPILOT_ALLOCATION_POLICY="${allocation_policy}"
   export TRIEPILOT_RANDOM_SEED="${SEED}"
+  export TRIEPILOT_SHAPE_BUCKETS
+  export TRIEPILOT_SHAPE_BUCKET_MODE
+  export CUDA_GRAPH_MAX_BS
+  export MAX_RUNNING_REQUESTS
   export FLASHINFER_WORKSPACE_BASE="${method_dir}/flashinfer_cache"
   export SPECULATION="ngram"
   export DRAFT_TOKENS="${draft_tokens}"
@@ -221,6 +237,8 @@ summarize_combo() {
   RIGHT_DATASET="${right_dataset}" \
   LEFT_RATIO="${left_ratio}" \
   B_BATCH="${b_batch}" \
+  CUDA_GRAPH_MAX_BS="${CUDA_GRAPH_MAX_BS}" \
+  MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS}" \
   .venv/bin/python - <<'PY'
 import csv
 import json
@@ -267,6 +285,10 @@ for method in methods:
     accepted = sum(float(event.get("accepted_tokens", 0)) for event in events)
     wasted = sum(float(event.get("wasted_nodes", 0)) for event in events)
     allocated = [float(event.get("allocated_budget", 0)) for event in events]
+    actual_draft_nodes = [float(event.get("actual_draft_nodes", 0)) for event in events]
+    verify_input_tokens = [float(event.get("verify_input_tokens", 0)) for event in events]
+    bucket_padding = [float(event.get("bucket_padding_nodes_total", 0)) for event in events]
+    shape_padding = [float(event.get("shape_padding_tokens_total", 0)) for event in events]
     heterogeneous_events = 0
     strategy_hit_rates = []
     controller_times = []
@@ -284,6 +306,8 @@ for method in methods:
         "right_dataset": os.environ["RIGHT_DATASET"],
         "left_ratio": os.environ["LEFT_RATIO"],
         "b_batch": b_batch,
+        "cuda_graph_max_bs": int(os.environ["CUDA_GRAPH_MAX_BS"]),
+        "max_running_requests": int(os.environ["MAX_RUNNING_REQUESTS"]),
         "method": method,
         "allocation_policy": first_event.get("allocation_policy", ""),
         "batch_budget": first_event.get("batch_budget", ""),
@@ -299,6 +323,10 @@ for method in methods:
         "wasted_node_ratio": wasted / verified if verified else 0.0,
         "mean_allocated_budget": mean(allocated),
         "max_allocated_budget": max(allocated) if allocated else 0.0,
+        "mean_actual_draft_nodes": mean(actual_draft_nodes),
+        "mean_verify_input_tokens": mean(verify_input_tokens),
+        "mean_bucket_padding_nodes": mean(bucket_padding),
+        "mean_shape_padding_tokens": mean(shape_padding),
         "heterogeneous_budget_event_ratio": heterogeneous_events / len(events) if events else 0.0,
         "mean_verify_time_us": mean([float(event.get("verify_time_us", 0)) for event in events]),
         "mean_target_forward_time_us": mean([float(event.get("target_forward_time_us", 0)) for event in events]),
@@ -337,12 +365,12 @@ notes = [
     f"Combo directory: `{combo_dir}`",
     f"Summary: `{summary_path}`",
     "",
-    "| method | out tok/s | mean TPOT ms | p99 TPOT ms | accepted/verified | wasted ratio | mean B | target us | graph-shape ok | hit rate |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| method | out tok/s | mean TPOT ms | p99 TPOT ms | accepted/verified | wasted ratio | mean B | mean input tokens | shape pad | target us | graph-shape ok | hit rate |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
 ]
 for row in rows:
     notes.append(
-        "| {method} | {out:.2f} | {tpot:.2f} | {p99:.2f} | {apv:.4f} | {wasted:.4f} | {mean_b:.2f} | {target:.2f} | {shape:.2f} | {hit:.2f} |".format(
+        "| {method} | {out:.2f} | {tpot:.2f} | {p99:.2f} | {apv:.4f} | {wasted:.4f} | {mean_b:.2f} | {mean_input:.2f} | {shape_pad:.2f} | {target:.2f} | {shape:.2f} | {hit:.2f} |".format(
             method=row["method"],
             out=row["output_throughput"],
             tpot=row["mean_tpot_ms"],
@@ -350,6 +378,8 @@ for row in rows:
             apv=row["accepted_per_verified_node"],
             wasted=row["wasted_node_ratio"],
             mean_b=row["mean_allocated_budget"],
+            mean_input=row["mean_verify_input_tokens"],
+            shape_pad=row["mean_shape_padding_tokens"],
             target=row["mean_target_forward_time_us"],
             shape=row["cuda_graph_token_shape_ok_ratio"],
             hit=row["strategy_bank_hit_rate"],
@@ -375,11 +405,20 @@ for pair in ${MIXED_PAIRS}; do
       --seed "${SEED}" \
       --output "${workload_path}"
 
-    .venv/bin/python scripts/materialize_workload.py \
+    materialize_cmd=(/root/anaconda3/envs/sglang/bin/python scripts/materialize_workload.py \
       --workload "${workload_path}" \
       --normalized-dir "${WORKSPACE}/data/normalized" \
       --output "${bench_dataset_path}" \
-      --max-rows "${NUM_PROMPTS}"
+      --max-rows "${NUM_PROMPTS}")
+    if [ "${MATERIALIZE_FILL_FILTERED}" = "1" ]; then
+      materialize_cmd+=( \
+        --fill-filtered \
+        --tokenizer-model "${MATERIALIZE_TOKENIZER_MODEL}" \
+        --context-len "${SHAREGPT_CONTEXT_LEN}" \
+        --fixed-output-len "${SHAREGPT_OUTPUT_LEN}" \
+      )
+    fi
+    "${materialize_cmd[@]}"
 
     for b_batch in ${B_BATCH_VALUES}; do
       combo_dir="${RUN_DIR}/${left_dataset}_${right_dataset}_r${ratio_id}_B${b_batch}"
@@ -406,6 +445,9 @@ done
   echo "Pairs: ${MIXED_PAIRS}"
   echo "Ratios: ${LEFT_RATIOS}"
   echo "B_batch values: ${B_BATCH_VALUES}"
+  echo "CUDA graph max batch size: ${CUDA_GRAPH_MAX_BS}"
+  echo "Max running requests: ${MAX_RUNNING_REQUESTS}"
+  echo "Materialize fill filtered: ${MATERIALIZE_FILL_FILTERED}"
   echo "Methods: ${METHODS}"
 } > "${NOTES_PATH}"
 

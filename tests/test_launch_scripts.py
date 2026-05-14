@@ -31,6 +31,10 @@ class A100LaunchScriptTest(unittest.TestCase):
         self.assertIn("--triepilot-allocation-policy", text)
         self.assertIn("TRIEPILOT_BATCH_BUDGET", text)
         self.assertIn("--triepilot-batch-budget", text)
+        self.assertIn("TRIEPILOT_SHAPE_BUCKETS", text)
+        self.assertIn("--triepilot-shape-buckets", text)
+        self.assertIn("TRIEPILOT_SHAPE_BUCKET_MODE", text)
+        self.assertIn("--triepilot-shape-bucket-mode", text)
 
     def test_session5_allocator_runner_covers_request_level_baselines(self):
         text = (
@@ -51,6 +55,17 @@ class A100LaunchScriptTest(unittest.TestCase):
         self.assertIn("session5_sweep_summary.csv", text)
         self.assertIn("mean_target_forward_time_us", text)
         self.assertIn("cuda_graph_token_shape_ok_ratio", text)
+        self.assertIn("TRIEPILOT_SHAPE_BUCKETS", text)
+        self.assertIn("TRIEPILOT_SHAPE_BUCKET_MODE", text)
+        self.assertIn("CUDA_GRAPH_MAX_BS", text)
+        self.assertIn("MAX_RUNNING_REQUESTS", text)
+        self.assertIn("cuda_graph_max_bs:", text)
+        self.assertIn("max_running_requests:", text)
+        self.assertIn('"cuda_graph_max_bs":', text)
+        self.assertIn('"max_running_requests":', text)
+        self.assertIn("MATERIALIZE_FILL_FILTERED", text)
+        self.assertIn("--tokenizer-model", text)
+        self.assertIn("--context-len", text)
 
     def test_a100_static_tiers_runner_covers_step1_budget_set(self):
         text = (

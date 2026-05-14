@@ -29,6 +29,9 @@ NGRAM_WORKER_PATH = (
 SCHEDULE_BATCH_PATH = (
     SGLANG_ROOT / "sglang" / "srt" / "managers" / "schedule_batch.py"
 )
+FLASHINFER_BACKEND_PATH = (
+    SGLANG_ROOT / "sglang" / "srt" / "layers" / "attention" / "flashinfer_backend.py"
+)
 TRIEPILOT_INTEGRATION_ROOT = REPO_ROOT / "triepilot" / "sglang_integration"
 RECORDER_PATH = (
     TRIEPILOT_INTEGRATION_ROOT / "recorder.py"
@@ -140,6 +143,10 @@ class SglangTriePilotTelemetryTest(unittest.TestCase):
         self.assertIn("--triepilot-allocation-policy", server_args)
         self.assertIn("triepilot_batch_budget", server_args)
         self.assertIn("--triepilot-batch-budget", server_args)
+        self.assertIn("triepilot_shape_buckets", server_args)
+        self.assertIn("--triepilot-shape-buckets", server_args)
+        self.assertIn("triepilot_shape_bucket_mode", server_args)
+        self.assertIn("--triepilot-shape-bucket-mode", server_args)
         self.assertIn("triepilot_allocation", server_args)
         self.assertIn("triepilot.sglang_integration.budget", ngram_worker)
         self.assertIn("triepilot.sglang_integration.features", ngram_worker)
@@ -147,10 +154,25 @@ class SglangTriePilotTelemetryTest(unittest.TestCase):
         self.assertNotIn("sglang.srt.speculative.triepilot", ngram_worker)
         self.assertIn("TriePilotNgramRecorder", ngram_worker)
         self.assertIn("record_step", ngram_worker)
+        self.assertIn("bucketize_triepilot_draft_budgets", ngram_worker)
+        self.assertIn("_build_fixed_shape_draft_inputs", ngram_worker)
         self.assertIn("observe_triepilot_accept_lengths", ngram_worker)
         self.assertIn("TriePilotStrategyBank", ngram_worker)
         self.assertIn("self.spec_verify_ct = 0", schedule_batch)
         self.assertIn("self.spec_accepted_tokens = 0", schedule_batch)
+
+    def test_flashinfer_cuda_graph_metadata_is_shape_keyed_for_ngram_verify(self):
+        if not FLASHINFER_BACKEND_PATH.exists():
+            self.skipTest("FlashInfer backend source is not present locally")
+
+        flashinfer_backend = FLASHINFER_BACKEND_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("_prefill_cuda_graph_metadata_key", flashinfer_backend)
+        self.assertIn('getattr(spec_info, "draft_token_num"', flashinfer_backend)
+        self.assertIn(
+            "self.prefill_cuda_graph_metadata[metadata_key]",
+            flashinfer_backend,
+        )
 
     def test_triepilot_integration_logic_lives_in_project_package(self):
         self.assertTrue(BUDGET_PATH.exists())
@@ -241,6 +263,21 @@ class SglangTriePilotTelemetryTest(unittest.TestCase):
 
         self.assertEqual(budgets, [0, 8, 2])
         self.assertEqual(active_lengths, [1, 8, 2])
+
+    def test_shape_bucket_quantizes_requested_budgets_and_tracks_padding(self):
+        module = load_budget_module()
+
+        result = module.bucketize_triepilot_draft_budgets(
+            [0, 1, 3, 8, 9, 99],
+            default_budget=16,
+            bucket_spec="0/1,2,4,8,16",
+        )
+
+        self.assertEqual(result["requested_budgets"], [0, 1, 3, 8, 9, 16])
+        self.assertEqual(result["bucketed_budgets"], [0, 2, 4, 8, 16, 16])
+        self.assertEqual(result["active_draft_lengths"], [1, 2, 4, 8, 16, 16])
+        self.assertEqual(result["bucket_ids"], ["0/1", "2", "4", "8", "16", "16"])
+        self.assertEqual(result["bucket_padding_nodes"], [0, 1, 1, 0, 7, 0])
 
     def test_accept_ema_observer_updates_request_state(self):
         module = load_budget_module()
@@ -377,6 +414,57 @@ class SglangTriePilotTelemetryTest(unittest.TestCase):
         self.assertEqual(event["verify_input_tokens"], 25)
         self.assertEqual(event["verified_nodes"], 24)
         self.assertEqual(event["wasted_nodes"], 20)
+
+    def test_recorder_separates_requested_bucketed_and_shape_padded_tokens(self):
+        module = load_recorder_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trace_path = Path(tmp) / "ngram_steps.jsonl"
+            recorder = module.TriePilotNgramRecorder(
+                path=trace_path,
+                run_id="shape-bucket-unit",
+            )
+            recorder.record_step(
+                step_id=6,
+                batch_size=3,
+                request_ids=["r0", "r1", "r2"],
+                seq_lens=[11, 17, 23],
+                draft_token_num=16,
+                verify_draft_token_num=8,
+                requested_draft_budgets=[5, 0, 3],
+                bucketed_draft_budgets=[8, 0, 4],
+                active_draft_lengths=[8, 1, 4],
+                bucket_ids=["8", "0/1", "4"],
+                bucket_padding_nodes=[3, 0, 1],
+                shape_padding_tokens=[0, 7, 4],
+                accept_lens=[1, 0, 2],
+                num_accepted_tokens=3,
+                can_run_cuda_graph=True,
+                timings_ns={
+                    "ngram_query": 1_000,
+                    "target_forward": 2_000,
+                    "verify": 3_000,
+                    "step": 6_000,
+                },
+            )
+            recorder.close()
+
+            event = json.loads(trace_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(event["allocated_budgets"], [5, 0, 3])
+        self.assertEqual(event["bucketed_budgets"], [8, 0, 4])
+        self.assertEqual(event["allocated_budget"], 8)
+        self.assertEqual(event["actual_draft_nodes"], 12)
+        self.assertEqual(event["verify_draft_token_num"], 8)
+        self.assertEqual(event["verify_input_tokens"], 24)
+        self.assertEqual(event["cuda_graph_expected_tokens"], 24)
+        self.assertEqual(event["cuda_graph_actual_tokens"], 24)
+        self.assertTrue(event["cuda_graph_token_shape_ok"])
+        self.assertEqual(event["bucket_ids"], ["8", "0/1", "4"])
+        self.assertEqual(event["bucket_padding_nodes"], [3, 0, 1])
+        self.assertEqual(event["bucket_padding_nodes_total"], 4)
+        self.assertEqual(event["shape_padding_tokens"], [0, 7, 4])
+        self.assertEqual(event["shape_padding_tokens_total"], 11)
 
     def test_ngram_tree_features_capture_depth_and_branching(self):
         module = load_features_module()

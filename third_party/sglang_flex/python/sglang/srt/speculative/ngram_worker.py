@@ -19,6 +19,7 @@ from sglang.srt.speculative.ngram_info import NgramVerifyInput
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from triepilot.sglang_integration.budget import (
     TriePilotStrategyBank,
+    bucketize_triepilot_draft_budgets,
     observe_triepilot_accept_lengths,
     observe_triepilot_strategy_feedback,
     resolve_triepilot_draft_budgets,
@@ -60,6 +61,15 @@ class NGRAMWorker:
         self.triepilot_batch_budget = server_args.triepilot_batch_budget
         self.triepilot_random_seed = server_args.triepilot_random_seed
         self.triepilot_accept_ema_alpha = server_args.triepilot_accept_ema_alpha
+        self.triepilot_shape_buckets = server_args.triepilot_shape_buckets
+        self.triepilot_shape_bucket_mode = server_args.triepilot_shape_bucket_mode
+        self.triepilot_verify_draft_token_num = self.draft_token_num
+        self.triepilot_requested_draft_budgets = None
+        self.triepilot_bucketed_draft_budgets = None
+        self.triepilot_active_draft_lengths = None
+        self.triepilot_bucket_ids = None
+        self.triepilot_bucket_padding_nodes = None
+        self.triepilot_shape_padding_tokens = None
         self.triepilot_strategy_bank = TriePilotStrategyBank(
             server_args.speculative_num_draft_tokens
         )
@@ -237,6 +247,92 @@ class NGRAMWorker:
             "retrive_next_sibling": np.asarray(retrive_next_sibling, dtype=np.int64),
         }
 
+    def _build_fixed_shape_draft_inputs(
+        self,
+        batch: ScheduleBatch,
+        req_drafts: np.ndarray,
+        mask: np.ndarray,
+        active_draft_lengths: list[int],
+        shape_draft_token_num: int,
+    ) -> dict[str, torch.Tensor | int]:
+        bs = batch.batch_size()
+        shape_draft_token_num = max(1, int(shape_draft_token_num))
+        full_drafts = req_drafts.reshape(bs, self.draft_token_num)
+        full_masks = mask.reshape(bs, self.draft_token_num, self.draft_token_num)
+
+        fixed_drafts = full_drafts[:, :shape_draft_token_num].copy()
+        fixed_masks = full_masks[
+            :, :shape_draft_token_num, :shape_draft_token_num
+        ].copy()
+
+        for index, active_length in enumerate(active_draft_lengths):
+            active_length = min(max(int(active_length), 1), shape_draft_token_num)
+            if active_length < shape_draft_token_num:
+                fixed_masks[index, active_length:, :] = False
+                fixed_masks[index, :, active_length:] = False
+                for padding_idx in range(active_length, shape_draft_token_num):
+                    fixed_masks[index, padding_idx, padding_idx] = True
+
+        draft_tokens = torch.from_numpy(
+            fixed_drafts.reshape(-1).astype(np.int64)
+        ).to(device=self.device, non_blocking=True)
+        compact_tree_mask = torch.from_numpy(
+            fixed_masks.reshape(-1).astype(bool)
+        ).to(device=self.device, non_blocking=True)
+        positions = torch.empty(
+            (bs * shape_draft_token_num,), dtype=torch.int64, device=self.device
+        )
+        retrive_index = torch.empty(
+            (bs, shape_draft_token_num), dtype=torch.int64, device=self.device
+        )
+        retrive_next_token = torch.empty(
+            (bs, shape_draft_token_num), dtype=torch.int64, device=self.device
+        )
+        retrive_next_sibling = torch.empty(
+            (bs, shape_draft_token_num), dtype=torch.int64, device=self.device
+        )
+
+        reconstruct_indices_from_tree_mask(
+            compact_tree_mask,
+            batch.seq_lens,
+            positions,
+            retrive_index,
+            retrive_next_token,
+            retrive_next_sibling,
+            bs,
+            shape_draft_token_num,
+        )
+
+        if USE_FULL_MASK:
+            full_attention_masks = []
+            for index, req in enumerate(batch.reqs):
+                seq_len = len(req.origin_input_ids) + len(req.output_ids)
+                prefix_mask = np.ones(
+                    (shape_draft_token_num, max(seq_len - 1, 0)),
+                    dtype=bool,
+                )
+                full_attention_masks.append(
+                    np.concatenate(
+                        (prefix_mask, fixed_masks[index].astype(bool)),
+                        axis=1,
+                    ).reshape(-1)
+                )
+            tree_mask = torch.from_numpy(
+                np.concatenate(full_attention_masks).astype(bool)
+            ).to(device=self.device, non_blocking=True)
+        else:
+            tree_mask = compact_tree_mask
+
+        return {
+            "draft_tokens": draft_tokens,
+            "tree_mask": tree_mask,
+            "positions": positions,
+            "retrive_index": retrive_index,
+            "retrive_next_token": retrive_next_token,
+            "retrive_next_sibling": retrive_next_sibling,
+            "shape_draft_token_num": shape_draft_token_num,
+        }
+
     def _prepare_for_speculative_decoding(self, batch: ScheduleBatch):
         if batch.forward_mode.is_extend():
             return
@@ -275,6 +371,40 @@ class NGRAMWorker:
         self.triepilot_controller_time_ns = (
             time.perf_counter_ns() - controller_start_ns
         )
+
+        bucket_info = None
+        bucketed_draft_budgets = list(requested_draft_budgets)
+        bucket_ids = ["0/1" if budget <= 0 else str(budget) for budget in requested_draft_budgets]
+        bucket_padding_nodes = [0] * len(requested_draft_budgets)
+        shape_padding_tokens = [0] * len(requested_draft_budgets)
+        verify_draft_token_num = self.draft_token_num
+        if self.triepilot_shape_bucket_mode != "off":
+            bucket_info = bucketize_triepilot_draft_budgets(
+                requested_draft_budgets,
+                default_budget=self.draft_token_num,
+                bucket_spec=self.triepilot_shape_buckets or "default",
+            )
+            requested_draft_budgets = bucket_info["requested_budgets"]
+            bucketed_draft_budgets = bucket_info["bucketed_budgets"]
+            active_draft_lengths = bucket_info["active_draft_lengths"]
+            bucket_ids = bucket_info["bucket_ids"]
+            bucket_padding_nodes = bucket_info["bucket_padding_nodes"]
+
+        if self.triepilot_shape_bucket_mode == "batch_max":
+            verify_draft_token_num = max(active_draft_lengths) if active_draft_lengths else 1
+            shape_padding_tokens = [
+                max(verify_draft_token_num - int(length), 0)
+                for length in active_draft_lengths
+            ]
+
+        self.triepilot_requested_draft_budgets = list(requested_draft_budgets)
+        self.triepilot_bucketed_draft_budgets = list(bucketed_draft_budgets)
+        self.triepilot_active_draft_lengths = list(active_draft_lengths)
+        self.triepilot_bucket_ids = list(bucket_ids)
+        self.triepilot_bucket_padding_nodes = list(bucket_padding_nodes)
+        self.triepilot_shape_padding_tokens = list(shape_padding_tokens)
+        self.triepilot_verify_draft_token_num = int(verify_draft_token_num)
+
         has_variable_budget = any(
             length != self.draft_token_num for length in active_draft_lengths
         )
@@ -284,7 +414,22 @@ class NGRAMWorker:
             draft_token_num=self.draft_token_num,
             active_draft_lengths=active_draft_lengths,
         )
-        if has_variable_budget:
+        if self.triepilot_shape_bucket_mode == "batch_max":
+            fixed_inputs = self._build_fixed_shape_draft_inputs(
+                batch,
+                req_drafts,
+                mask,
+                active_draft_lengths,
+                verify_draft_token_num,
+            )
+            draft_tokens = fixed_inputs["draft_tokens"]
+            tree_mask = fixed_inputs["tree_mask"]
+            positions = fixed_inputs["positions"]
+            retrive_index = fixed_inputs["retrive_index"]
+            retrive_next_token = fixed_inputs["retrive_next_token"]
+            retrive_next_sibling = fixed_inputs["retrive_next_sibling"]
+            draft_lens = None
+        elif has_variable_budget:
             variable_inputs = self._build_variable_draft_inputs(
                 batch, req_drafts, mask, active_draft_lengths
             )
@@ -350,9 +495,13 @@ class NGRAMWorker:
             retrive_index,
             retrive_next_token,
             retrive_next_sibling,
-            self.draft_token_num,
+            verify_draft_token_num,
             draft_lens=draft_lens,
             requested_draft_budgets=requested_draft_budgets,
+            bucketed_draft_budgets=bucketed_draft_budgets,
+            bucket_ids=bucket_ids,
+            bucket_padding_nodes=bucket_padding_nodes,
+            shape_padding_tokens=shape_padding_tokens,
         )
         batch.spec_info.prepare_for_verify(batch, self.page_size)
 
@@ -500,11 +649,25 @@ class NGRAMWorker:
                     request_ids=[req.rid for req in batch.reqs],
                     seq_lens=batch.seq_lens_cpu,
                     draft_token_num=self.draft_token_num,
+                    verify_draft_token_num=getattr(
+                        verify_input, "draft_token_num", self.draft_token_num
+                    ),
                     requested_draft_budgets=getattr(
                         verify_input, "requested_draft_budgets", None
                     ),
-                    active_draft_lengths=getattr(
-                        verify_input, "draft_lens_cpu", None
+                    bucketed_draft_budgets=getattr(
+                        verify_input, "bucketed_draft_budgets", None
+                    ),
+                    active_draft_lengths=(
+                        self.triepilot_active_draft_lengths
+                        or getattr(verify_input, "draft_lens_cpu", None)
+                    ),
+                    bucket_ids=getattr(verify_input, "bucket_ids", None),
+                    bucket_padding_nodes=getattr(
+                        verify_input, "bucket_padding_nodes", None
+                    ),
+                    shape_padding_tokens=getattr(
+                        verify_input, "shape_padding_tokens", None
                     ),
                     accept_lens=accept_lens,
                     num_accepted_tokens=num_accepted_tokens,

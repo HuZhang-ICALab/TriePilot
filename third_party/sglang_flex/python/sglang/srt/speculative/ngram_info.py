@@ -59,6 +59,10 @@ class NgramVerifyInput(SpecInput):
         draft_token_num: int,
         draft_lens: Optional[torch.Tensor | Sequence[int]] = None,
         requested_draft_budgets: Optional[Sequence[int]] = None,
+        bucketed_draft_budgets: Optional[Sequence[int]] = None,
+        bucket_ids: Optional[Sequence[str]] = None,
+        bucket_padding_nodes: Optional[Sequence[int]] = None,
+        shape_padding_tokens: Optional[Sequence[int]] = None,
     ):
         super().__init__(SpecInputType.NGRAM_VERIFY)
         self.draft_token = draft_token
@@ -72,6 +76,24 @@ class NgramVerifyInput(SpecInput):
         self.requested_draft_budgets = (
             [int(x) for x in requested_draft_budgets]
             if requested_draft_budgets is not None
+            else None
+        )
+        self.bucketed_draft_budgets = (
+            [int(x) for x in bucketed_draft_budgets]
+            if bucketed_draft_budgets is not None
+            else None
+        )
+        self.bucket_ids = (
+            [str(x) for x in bucket_ids] if bucket_ids is not None else None
+        )
+        self.bucket_padding_nodes = (
+            [int(x) for x in bucket_padding_nodes]
+            if bucket_padding_nodes is not None
+            else None
+        )
+        self.shape_padding_tokens = (
+            [int(x) for x in shape_padding_tokens]
+            if shape_padding_tokens is not None
             else None
         )
         self.draft_lens = None

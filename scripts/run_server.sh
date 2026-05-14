@@ -71,6 +71,14 @@ if [ -n "${TRIEPILOT_ACCEPT_EMA_ALPHA:-}" ]; then
   cmd+=(--triepilot-accept-ema-alpha "${TRIEPILOT_ACCEPT_EMA_ALPHA}")
 fi
 
+if [ -n "${TRIEPILOT_SHAPE_BUCKETS:-}" ]; then
+  cmd+=(--triepilot-shape-buckets "${TRIEPILOT_SHAPE_BUCKETS}")
+fi
+
+if [ -n "${TRIEPILOT_SHAPE_BUCKET_MODE:-}" ]; then
+  cmd+=(--triepilot-shape-bucket-mode "${TRIEPILOT_SHAPE_BUCKET_MODE}")
+fi
+
 if [ "${SPECULATION}" = "ngram" ]; then
   DRAFT_TOKENS="${DRAFT_TOKENS:-8}"
   MATCH_WINDOW="${MATCH_WINDOW:-12}"

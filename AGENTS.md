@@ -737,20 +737,301 @@ Best static：
     而 mean verify_time_us 仍约 1.5ms。结论：variable allocation 当前主要瓶颈不是 verifier
     post-processing，而是 compact verify input 触发 CUDA graph token-shape mismatch，使 target forward
     进入慢路径。
+[x] A100 上完成 Session 5 shape bucket runtime path 第一版：新增 shape bucket 解析与量化逻辑，
+    默认 bucket set 为 0/1、2、4、8、16；ServerArgs / scripts/run_server.sh / Session 5 runner
+    支持 --triepilot-shape-buckets 与 --triepilot-shape-bucket-mode。NGRAMWorker 在
+    batch_max 模式下按 batch 内最大 active bucket 构造固定 verify token shape，同时记录
+    requested_draft_budgets、bucketed_draft_budgets、active_draft_lengths、bucket_ids、
+    bucket_padding_nodes、shape_padding_tokens、verify_draft_token_num、cuda_graph token-shape telemetry。
+    CUDA graph runner 支持 NGRAM 按 (num_tokens_per_bs, bs) 捕获/回放多个 token shape。
+[x] A100 上完成 shape bucket runtime 根因修复与 smoke 验证：初始
+    triepilot_allocation + batch_max 在 verify 后 _fill_requests 报 CUDA illegal memory access；
+    系统排查确认 graph / output buffer 已按 (tokens_per_bs, bs) 分 key，但 FlashInfer target-verify
+    wrapper metadata 仍只按 bs 覆盖，导致 replay 更新错 shape wrapper。已将 FlashInfer target-verify
+    prefill_cuda_graph_metadata 改为按 (draft_token_num, bs) key。A100 targeted pytest 覆盖
+    tests/test_sglang_triepilot_telemetry.py 与 tests/test_launch_scripts.py，结果 20 passed /
+    2 subtests passed；sglang conda env 下 py_compile 覆盖 server_args.py、ngram_info.py、
+    ngram_worker.py、cuda_graph_runner.py、flashinfer_backend.py、triepilot/sglang_integration/budget.py、
+    recorder.py。真实 smoke 1 保存在
+    /root/TriePilot/runs/20260513_shape_bucket_metadata_fix_smoke_seed20260512：InstructCoder+GSM8K
+    50/50，NUM_PROMPTS=4、max_concurrency=2、B_batch=16、equal_budget_allocation 与
+    triepilot_allocation 均完成，无 Traceback / CUDA error；TriePilot cuda_graph_ratio=1.0、
+    cuda_graph_token_shape_ok_ratio=1.0、mean_target_forward_time_us=1121.97us、verified_nodes=72、
+    accepted_per_verified_node=0.2222、mean_verify_input_tokens=2.77、mean TPOT=13.94ms、
+    p99 TPOT=17.46ms。真实 smoke 2 保存在
+    /root/TriePilot/runs/20260513_shape_bucket_triepilot_c8_smoke_seed20260512：NUM_PROMPTS=16、
+    max_concurrency=8、B_batch=16、triepilot_allocation 完成，cuda_graph_ratio=1.0、
+    cuda_graph_token_shape_ok_ratio=1.0、mean_target_forward_time_us=1204.84us、verified_nodes=94、
+    accepted_per_verified_node=0.1277、mean_verify_input_tokens=10.875、mean TPOT=18.88ms、
+    p99 TPOT=21.95ms。实验结束后 GPU 回到 1 MiB，且无残留 sglang.launch_server /
+    bench_serving 进程。
+[x] A100 上完成 Session 5 shape-bucket 同构诊断复跑：按
+    20260513_0945_session5_bbatch_diagnostic_seed20260512 同构配置覆盖 InstructCoder+GSM8K 与
+    CNN/DailyMail+random 两组 50/50，NUM_PROMPTS=32、max_concurrency=8、request_rate=8、
+    sharegpt_output_len=32、B_batch=16/32/64。结果保存在
+    /root/TriePilot/runs/20260513_1254_session5_shape_bucket_diagnostic_seed20260512；
+    compact/off + batch_global_budget2/4/8/16 完成 30 行，summary 为
+    compact_off/session5_sweep_summary.csv；shape_bucket_batch_max 在默认
+    CUDA_GRAPH_MAX_BS=32/MAX_RUNNING_REQUESTS=32 下短上下文完成 3 行，但在
+    CNN/DailyMail+random B=16 触发 CUDA OOM，根因是 shape-bucket graph capture 同时捕获
+    bs=1..32 与 tokens_per_bs=1/2/4/8/16，graph capture 后仅剩约 0.15GB 显存，长上下文
+    4096-token prefill 进入 target forward 时 OOM。随后补跑 shape_bucket_batch_max_cgbs8：
+    CUDA_GRAPH_MAX_BS=8、MAX_RUNNING_REQUESTS=8、bucket set=0/1,2,4,8,16，完成 6 行，
+    summary 为 shape_bucket_batch_max_cgbs8/session5_sweep_summary.csv；combined summary 为
+    combined_session5_shape_bucket_diagnostic_cgbs8.csv，comparison summary 为
+    comparison_session5_shape_bucket_cgbs8.csv，notes 为 notes_cgbs8.md。完整性检查确认
+    compact/off 30 行、cgbs8 6 行、combined 39 行、comparison 6 行，request-level budget
+    violation=0，cgbs8 log 无 Traceback / OOM，实验结束后 GPU 回到 1 MiB 且无残留
+    sglang.launch_server / bench_serving 进程。
+[x] shape-bucket 诊断结论：cgbs8 将 TriePilot 从 compact variable 慢路径拉回 CUDA graph path，
+    cuda_graph_ratio=1.0、cuda_graph_token_shape_ok_ratio=1.0，mean_target_forward_time_us
+    约 1.04-1.10ms（compact/off TriePilot 约 18.6-19.5ms），同时保持 verified_nodes 远低于
+    tuned batch-global。InstructCoder+GSM8K 上，B=16 的 shape-bucket mean/p99 TPOT 为
+    17.29/18.67ms，对比 best-static mean budget8=17.32ms、best-static p99 budget2=22.85ms；
+    B=32/64 的 mean TPOT 比 best-static mean 慢约 0.74-0.77ms，但 p99 优约 3.5-3.6ms。
+    CNN/DailyMail+random 上，shape-bucket 在 B=16/32/64 的 mean TPOT 为
+    32.23/32.28/32.17ms，均优于 best-static mean budget8 的 34.40/34.39/34.45ms；
+    p99 TPOT 为 48.46/48.18/48.39ms，均优于 best-static p99 budget2 的
+    56.38/56.35/56.47ms。说明 shape bucket 在长上下文混合负载上已同时改善 mean 与 tail，
+    在短上下文混合负载上主要改善 tail，具备进入更大 mixed workload 的工程前提。
+[x] A100 上完成 Session 5 cgbs8 batch-global fairness smoke：先用 TDD 在 A100 上验证 runner
+    元数据补丁，新增 tests/test_launch_scripts.py 断言 Session 5 runner 将 CUDA_GRAPH_MAX_BS 与
+    MAX_RUNNING_REQUESTS 写入 config.yaml 与 session5_sweep_summary.csv；RED 阶段按预期失败，
+    补丁后 A100 上 pytest tests/test_launch_scripts.py 通过 4 passed / 2 subtests passed，
+    bash -n scripts/remote/a100_session5_allocator_baselines.sh 通过。公平性 smoke 在相同
+    CUDA_GRAPH_MAX_BS=8、MAX_RUNNING_REQUESTS=8 约束下，对 InstructCoder+GSM8K 与
+    CNN/DailyMail+random 两组 50/50、B_batch=16/32/64 复跑 batch_global_budget2/4/8/16，
+    结果保存在
+    /root/TriePilot/runs/20260513_1445_session5_cgbs8_batch_global_fairness_seed20260512；
+    session5_sweep_summary.csv 共 24 行，comparison summary 为
+    comparison_shape_bucket_vs_batch_global_cgbs8_fairness.csv。完整性检查确认 missing_files=0、
+    budget/CUDA graph shape violations=0，config 记录 cuda_graph_max_bs: 8 与
+    max_running_requests: 8，实验结束后 GPU 回到 1 MiB 且无残留 sglang.launch_server /
+    bench_serving 进程。
+[x] cgbs8 fairness 结论：在相同 cgbs8 运行约束下，batch-global 的 mean-optimal 仍为
+    batch_global_budget8，tail-optimal 仍为 batch_global_budget2。相对公平 cgbs8 best static，
+    shape-bucket TriePilot 在 InstructCoder+GSM8K 上 B=16 的 mean TPOT 慢 0.14ms、p99 快
+    3.83ms；B=32/64 的 mean TPOT 慢 0.83/0.73ms、p99 快 3.62/3.43ms。CNN/DailyMail+random
+    上 shape-bucket TriePilot 在 B=16/32/64 的 mean TPOT 快 2.54/2.39/2.57ms，p99 快
+    2.20/2.47/2.33ms。结论：shape-bucket 的长上下文收益不是单纯来自 max_running /
+    cuda_graph cap；短上下文场景仍主要是 tail 改善，mean 需要靠更强策略或更合适 workload。
+[x] A100 上完成 Session 5 四组 mixed pairs 50/50 小主表：Qwen3-8B，
+    CUDA_GRAPH_MAX_BS=8、MAX_RUNNING_REQUESTS=8、NUM_PROMPTS=32、max_concurrency=8、
+    request_rate=8、sharegpt_output_len=32、B_batch=16/32/64。覆盖
+    InstructCoder+GSM8K、InstructCoder+ShareGPT、JSON/tool-call+ShareGPT、
+    CNN/DailyMail+random。拆成三条 runtime path：1）batch_global_budget2/4/8/16 +
+    shape_bucket_mode=off；2）compact TriePilot runtime ablation：triepilot_allocation +
+    shape_bucket_mode=off；3）shape-bucket TriePilot：triepilot_allocation +
+    shape_bucket_mode=batch_max + bucket set=0/1,2,4,8,16。结果保存在
+    /root/TriePilot/runs/20260513_1555_session5_mixed50_small_table_seed20260512；
+    combined summary 为 combined_session5_mixed50_small_table.csv，comparison summary 为
+    comparison_session5_mixed50_small_table.csv，notes 为 notes.md。完整性检查确认
+    batch_global 48 行、compact 12 行、shape-bucket 12 行；raw_step_events 与 bench outputs
+    各 72 个；raw trace 预算违规=0；shape-bucket graph/shape ratio <0.99 的行数=0；
+    log 中 Traceback / CUDA out of memory / RuntimeError / server health error 均为 0；
+    实验结束后 GPU 回到 1 MiB，且无残留 sglang.launch_server / bench_serving 进程。
+[x] 四组 50/50 小主表结论：shape-bucket TriePilot 的 p99 TPOT 在 12/12 个
+    pair×B_batch 对比中优于 best tuned batch-global，mean TPOT 在 5/12 个对比中优于
+    best tuned batch-global；相对 compact TriePilot，shape-bucket 的 mean 与 p99 均为
+    12/12 胜出。CNN/DailyMail+random 上 B=16/32/64 的 shape-bucket mean TPOT 分别快
+    2.50/2.47/2.57ms，p99 快 1.54/2.52/2.54ms；InstructCoder+GSM8K 上 mean 慢
+    0.23/0.74/0.63ms，但 p99 快 4.27/3.52/3.33ms；InstructCoder+ShareGPT 上
+    B=32/64 mean 快 0.82/0.69ms，三档 p99 均快 0.80-2.30ms；JSON/tool-call+ShareGPT 上
+    mean 约持平或略慢 0.03-1.60ms，但 p99 快 1.72-2.03ms。shape-bucket 12 行
+    cuda_graph_ratio=1.0、cuda_graph_token_shape_ok_ratio=1.0，mean_target_forward_time_us
+    约 1.06-1.12ms；compact TriePilot 12 行 cuda_graph_ratio=0.0，target forward 约
+    18.5-20.1ms。该结果说明 50/50 小主表已具备进入比例扩展的工程稳定性；论文主张上应强调
+    tail-latency 与 wasted verifier node 降低，不应把当前策略写成所有场景 mean TPOT 都优于 tuned static。
+[x] A100 上完成 Session 5 四组 mixed pairs 的 20/80 与 80/20 比例敏感性扩展：Qwen3-8B，
+    CUDA_GRAPH_MAX_BS=8、MAX_RUNNING_REQUESTS=8、NUM_PROMPTS=32、max_concurrency=8、
+    request_rate=8、sharegpt_output_len=32、B_batch=16/32/64。覆盖 InstructCoder+GSM8K、
+    InstructCoder+ShareGPT、JSON/tool-call+ShareGPT、CNN/DailyMail+random，并继续拆成三条
+    runtime path：batch_global_budget2/4/8/16 + shape_bucket_mode=off、compact TriePilot
+    + shape_bucket_mode=off、shape-bucket TriePilot + shape_bucket_mode=batch_max +
+    bucket set=0/1,2,4,8,16。结果保存在
+    /root/TriePilot/runs/20260513_2030_session5_ratio_sensitivity_seed20260512；
+    combined summary 为 combined_session5_ratio_sensitivity.csv，comparison summary 为
+    comparison_session5_ratio_sensitivity.csv，notes 为 notes.md。完整性检查确认
+    batch_global 96 行、compact 24 行、shape-bucket 24 行；raw_step_events 与 bench outputs
+    各 144 个；raw trace 预算违规=0；shape-bucket graph/shape bad events=0；
+    successful_requests != 32 的 bench output 数=0；log 中 Traceback / CUDA out of memory /
+    RuntimeError / server health error 均为 0；实验结束后 GPU 回到 1 MiB，且无残留
+    sglang.launch_server / bench_serving 进程。
+[x] 比例敏感性结论：shape-bucket TriePilot 的 p99 TPOT 在 24/24 个 pair×ratio×B_batch
+    对比中优于 best tuned batch-global，mean TPOT 在 12/24 个对比中优于 best tuned
+    batch-global；相对 compact TriePilot，shape-bucket 的 mean 与 p99 均为 22/24 胜出。
+    分 pair 看，CNN/DailyMail+random 上 mean 胜出 3/6、p99 胜出 6/6，平均 mean/p99
+    delta 为 -0.36ms / -4.43ms；InstructCoder+GSM8K 上 mean 胜出 2/6、p99 胜出
+    6/6，平均 delta 为 +0.87ms / -2.29ms；InstructCoder+ShareGPT 上 mean 胜出
+    4/6、p99 胜出 6/6，平均 delta 为 -0.91ms / -3.05ms；JSON/tool-call+ShareGPT
+    上 mean 胜出 3/6、p99 胜出 6/6，平均 delta 为 -0.67ms / -2.15ms。结论延续
+    50/50 小主表：shape-bucket 的稳定收益主要体现在 tail-latency 与 runtime-path 稳定性，
+    mean TPOT 受 workload composition 影响，不能写成全场景 mean 都赢 tuned static。
+[x] A100 上完成 Session 5 larger-budget / longer-output 增量验证：Qwen3-8B，
+    四组 mixed pairs（InstructCoder+GSM8K、InstructCoder+ShareGPT、JSON/tool-call+ShareGPT、
+    CNN/DailyMail+random），ratio=50/50、20/80、80/20，B_batch=100/160，
+    NUM_PROMPTS=64、max_concurrency=8、request_rate=8、sharegpt_output_len=64、
+    sharegpt_context_len=4096、CUDA_GRAPH_MAX_BS=8、MAX_RUNNING_REQUESTS=8。
+    主对照为 batch_global_budget2/4/8/16 与 shape-bucket TriePilot
+    （bucket set=0/1,2,4,8,16；shape_bucket_mode=batch_max），本轮不扩展已知慢的
+    compact path。结果保存在
+    /root/TriePilot/runs/20260513_2335_session5_larger_budget_out64_shape_bucket_seed20260512；
+    summary 为 session5_sweep_summary.csv（120 行结果），comparison 为
+    comparison_session5_larger_budget_out64_shape_bucket.csv，分析 notes 为 analysis_notes.md。
+    完整性检查确认 rows=120/120、combos=24/24、missing_or_empty_files=0、
+    budget_violations=0、driver log 无 Traceback / missing trace / B_batch exceeded /
+    server health error / OOM / CUDA illegal memory access；所有方法
+    min_cuda_graph_token_shape_ok_ratio=1.0，TriePilot min_cuda_graph_token_shape_ok_ratio=1.0；
+    实验结束后 GPU 回到 1 MiB，且无残留 sglang.launch_server / Session 5 runner 进程。
+[x] larger-budget / longer-output 结论：shape-bucket TriePilot 对 tuned static 的 p99 TPOT
+    在 22/24 个 pair×ratio×B_batch 对比中胜出，且 22/24 个对比在 best-static p99
+    的 5% 以内；mean TPOT 仅 2/24 个对比胜出，14/24 个对比在 best-static mean
+    的 10% 以内。平均看，TriePilot 相对 p99-best static 的 p99 TPOT delta 为
+    -1.81ms，相对 mean-best static 的 mean TPOT delta 为 +1.83ms；verified-node
+    平均相对 p99-best static 减少 98.22%，相对 mean-best static 减少 99.34%。
+    分 pair 看，CNN/DailyMail+random 的 p99 胜出 6/6、mean 胜出 2/6，平均 p99
+    delta -5.12ms；InstructCoder+GSM8K、InstructCoder+ShareGPT 的 p99 都是
+    6/6 胜出但 mean 0/6 胜出；JSON/tool-call+ShareGPT 的 p99 为 4/6 胜出且
+    mean 0/6 胜出。该结果说明 shape-bucket 已解决 compact path 的 CUDA graph
+    mismatch，并支持“显著降低 verifier waste、经常改善 p99”的论文叙述；不能写成
+    mean TPOT 全面优于 tuned batch-global static。
+[x] A100 上完成 compact TriePilot runtime ablation 小子集：Qwen3-8B，
+    JSON/tool-call+ShareGPT 与 CNN/DailyMail+random 两组 mixed workload，ratio=50/50
+    和 80/20，B_batch=100/160，NUM_PROMPTS=64、max_concurrency=8、
+    request_rate=8、sharegpt_output_len=64、sharegpt_context_len=4096，
+    CUDA_GRAPH_MAX_BS=8、MAX_RUNNING_REQUESTS=8。compact path 使用
+    triepilot_allocation + shape_bucket_mode=off，并与既有
+    20260513_2335 larger-budget / longer-output shape-bucket 结果按同配置对齐比较。
+    结果保存在
+    /root/TriePilot/runs/20260514_0030_session5_compact_ablation_out64_seed20260512；
+    compact summary 为 combined_compact_ablation_out64.csv，comparison 为
+    comparison_compact_vs_shape_bucket_out64.csv，分析 notes 为
+    analysis_compact_vs_shape_bucket_out64.md。完整性检查确认 compact_rows=8、
+    comparison_rows=8、missing_files=0、budget_violations=0，driver / server log
+    无 Traceback / OOM / RuntimeError / server health error / B_batch exceeded /
+    missing output；实验结束后 GPU 回到 1 MiB，且无残留 sglang.launch_server /
+    bench_serving / Session 5 runner 进程。
+[x] compact runtime ablation 结论：shape-bucket TriePilot 在 8/8 个对比中 mean TPOT
+    与 p99 TPOT 均优于 compact path。compact-minus-shape 平均 mean TPOT delta 为
+    +4.06ms，p99 TPOT delta 为 +4.47ms，target-forward delta 为 +18057.71us；
+    compact min cuda_graph_ratio=0.00，而 shape-bucket min cuda_graph_ratio=1.00。
+    分 workload 看，CNN/DailyMail+random 的 compact mean 比 shape-bucket 慢
+    2.23-3.73ms、p99 慢 3.86-4.63ms；JSON/tool-call+ShareGPT 的 compact
+    mean 慢 4.79-5.61ms、p99 慢 4.45-5.30ms。该结果确认大预算长输出下
+    compact variable path 的主要劣势仍来自离开 CUDA graph 的 target forward 慢路径，
+    shape-bucket 是后续主表更合理的 deployable runtime path。
+[x] A100 上完成 Session 5 shape-bucket 多 seed 稳健性验证：Qwen3-8B，四组
+    mixed pairs、ratio=50/50、B_batch=100/160、NUM_PROMPTS=64、max_concurrency=8、
+    request_rate=8、sharegpt_output_len=64、sharegpt_context_len=4096，
+    CUDA_GRAPH_MAX_BS=8、MAX_RUNNING_REQUESTS=8。新增 seed=20260513 与
+    seed=20260514；每个 seed 下同配置跑 batch_global_budget2/4/8/16 与
+    shape-bucket triepilot_allocation（bucket set=default，即 0/1、2、4、8、16）。
+    结果保存在
+    /root/TriePilot/runs/20260514_0735_session5_multiseed_shape_bucket_robustness；
+    combined summary 为 combined_multiseed_shape_bucket_robustness.csv，
+    comparison summary 为 comparison_multiseed_shape_bucket_robustness.csv，
+    分析 notes 为 analysis_multiseed_shape_bucket_robustness.md。完整性检查确认
+    batch-global seed20260513/seed20260514 各 32 行，shape-bucket seed20260513/
+    seed20260514 各 8 行，combined=80 行、comparison=16 行；raw trace 预算违规=0；
+    shape-bucket cuda_graph_ratio 与 cuda_graph_token_shape_ok_ratio 最小值均为 1.0；
+    driver/server log 无 Traceback / OOM / RuntimeError / server health error /
+    B_batch exceeded / missing output；实验结束后 GPU 回到 1 MiB 且无残留
+    sglang.launch_server / bench_serving / multiseed driver 进程。
+[x] 多 seed 稳健性结论：shape-bucket TriePilot 相对同 seed、同 pair、同 B_batch 下
+    tuned best-static batch-global，p99 TPOT 在 15/16 个对比中胜出，平均 p99 delta
+    为 -1.43ms；mean TPOT 在 2/16 个对比中胜出，平均 mean delta 为 +1.59ms；
+    accepted_per_verified_node 相对 best-static APV 平均为 1.36x。分 pair 看，
+    CNN/DailyMail+random 在 seed20260513 的 B=100/160 上 mean 与 p99 均胜出，
+    seed20260514 上 p99 胜出但 mean 慢约 3.0ms；InstructCoder+GSM8K 两个 seed
+    的 p99 均胜出、mean 均慢约 1.6-1.9ms；InstructCoder+ShareGPT 除
+    seed20260513 B=100 外 p99 均胜出，mean 慢约 0.4-2.0ms；JSON/tool-call+ShareGPT
+    p99 全部胜出，mean 慢约 1.8-3.2ms。JSON/tool-call+ShareGPT 在两个 seed、
+    所有方法上 bench completed 均为 59/64，属于同 workload 下跨方法一致的
+    bench/materialization caveat，后续正式主表需要记录或修正。
+[x] A100 上完成 JSON/tool-call+ShareGPT completed=59/64 根因排查与 materialize 修正：
+    bench_serving 的 ShareGPT loader 会在发送前过滤 prompt_len + output_len > context_len
+    的样本；旧 materialize 只输出 64 条，导致 JSON/tool-call 的超长 schema prompt 被过滤后
+    completed 固定掉到 59/64 或 62/64。新增 materialize_workload_to_sharegpt 的
+    prompt_token_counter / max_prompt_tokens / fill_filtered 选项，runner 默认使用
+    /root/anaconda3/envs/sglang/bin/python + Qwen3 tokenizer 按 SHAREGPT_CONTEXT_LEN 与
+    SHAREGPT_OUTPUT_LEN 过滤并在同一 dataset 内向后补样，保持 mixed ratio 不漂移。TDD 在
+    A100 上完成：RED 阶段 tests/test_workload_materialize.py 与 tests/test_launch_scripts.py
+    按预期失败，补丁后 A100 上
+    .venv/bin/python -m pytest tests/test_workload_materialize.py tests/test_launch_scripts.py
+    -q 通过 6 passed / 2 subtests passed；后续完整 targeted 验证通过 8 passed /
+    2 subtests passed，并通过 bash -n 与 py_compile。真实 materialize smoke 保存在
+    /root/TriePilot/runs/20260514_materialize_filter_smoke，JSON/tool-call+ShareGPT
+    r0.5 输出 64 条，过滤后 invalid=0，替换 5 条超长 json_tool 样本。
+[x] A100 上完成 Session 5 ratio=20/80 与 80/20 的 shape-bucket 多 seed 稳健性扩展：
+    Qwen3-8B，四组 mixed pairs、ratio=0.2/0.8、B_batch=100/160、NUM_PROMPTS=64、
+    max_concurrency=8、request_rate=8、sharegpt_output_len=64、sharegpt_context_len=4096，
+    CUDA_GRAPH_MAX_BS=8、MAX_RUNNING_REQUESTS=8。新增 seed=20260513 与 seed=20260514；
+    每个 seed 下跑 batch_global_budget2/4/8/16（shape_bucket_mode=off）与
+    shape-bucket triepilot_allocation（shape_bucket_mode=batch_max，bucket set=default）。
+    结果保存在
+    /root/TriePilot/runs/20260514_1120_session5_ratio_multiseed_shape_bucket_robustness；
+    combined summary 为 combined_ratio_multiseed_shape_bucket_robustness.csv，
+    comparison summary 为 comparison_ratio_multiseed_shape_bucket_robustness.csv，
+    分析 notes 为 analysis_ratio_multiseed_shape_bucket_robustness.md。完整性检查确认
+    batch-global seed20260513/seed20260514 各 64 行，shape-bucket seed20260513/
+    seed20260514 各 16 行，combined=160 行、comparison=32 行；所有 bench completed=64，
+    errors 为空；raw trace 预算违规=0；shape-bucket cuda_graph_ratio 与
+    cuda_graph_token_shape_ok_ratio 最小值均为 1.0；driver log 无 Traceback / OOM /
+    RuntimeError / server health error / B_batch exceeded / missing output / CUDA error；
+    实验结束后 GPU 回到 1 MiB 且无残留 sglang.launch_server / bench_serving / driver 进程。
+[x] ratio 多 seed 稳健性结论：shape-bucket TriePilot 相对同 seed、同 pair、同 ratio、
+    同 B_batch 下 tuned best-static batch-global，p99 TPOT 在 28/32 个对比中胜出，
+    平均 p99 delta 为 -2.19ms；mean TPOT 在 2/32 个对比中胜出，平均 mean delta
+    为 +2.21ms；accepted_per_verified_node 相对 mean-tuned static 平均为 1.95x。
+    分 ratio 看，20/80 的 p99 16/16 胜出、mean 0/16 胜出，平均 p99/mean delta
+    为 -3.63ms / +2.71ms；80/20 的 p99 12/16 胜出、mean 2/16 胜出，平均
+    p99/mean delta 为 -0.74ms / +1.71ms。分 pair 看，CNN/DailyMail+random 的
+    p99 8/8 胜出且 mean 2/8 胜出，平均 p99 delta -5.45ms；InstructCoder+GSM8K
+    与 InstructCoder+ShareGPT 的 p99 均 8/8 胜出但 mean 均 0/8；JSON/tool-call+ShareGPT
+    的 p99 4/8 胜出，主要失败集中在 ratio=0.8，mean 全部慢约 3.5ms。该结果进一步支持
+    “tail-latency / verifier waste 优势稳定，mean TPOT 需要 mean-aware utility 或 static fallback”
+    的下一步方向。
+[x] A100 上完成 mean-aware static fallback 负面诊断并回退实现：曾临时新增
+    triepilot_mean_aware_allocation 作为诊断策略，在 dense predictable batch 中启用 capped
+    static fallback=8，并跑通 A100 targeted pytest / py_compile / diagnostic sweep。实验确认该
+    策略几乎退化为 batch_global_budget8 后，已从代码中回退该 policy、CLI choice、测试断言与
+    telemetry allocation_modes 字段，避免进入后续测试和开发。
+[x] A100 上完成 mean-aware policy diagnostic sweep：Qwen3-8B，三组代表性 mixed workload
+    （InstructCoder+GSM8K、JSON/tool-call+ShareGPT、CNN/DailyMail+random），ratio=0.2/0.8，
+    B_batch=100，NUM_PROMPTS=64，sharegpt_output_len=64，CUDA_GRAPH_MAX_BS=8、
+    MAX_RUNNING_REQUESTS=8，比较 batch_global_budget2、batch_global_budget8、原
+    triepilot_allocation 与 triepilot_mean_aware_allocation。结果保存在
+    /root/TriePilot/runs/20260514_1600_session5_mean_aware_policy_diagnostic；
+    session5_sweep_summary.csv 共 24/24 行，6/6 个 combo summary，raw trace 与 bench output
+    均非空；driver log 无 Traceback / OOM / RuntimeError / server health error /
+    B_batch exceeded / invalid choice；实验结束后 GPU 回到 1 MiB。
+[x] mean-aware 负面诊断结论：capped static fallback 能显著追回 mean TPOT，但代价是几乎退化为
+    batch_global_budget8。mean-aware 相对原 TriePilot mean TPOT 5/6 胜出，平均 delta=-2.49ms；
+    但 p99 TPOT 0/6 胜出，平均 delta=+5.31ms；相对 budget8 的 mean 仅 1/6 胜出，
+    平均慢 0.34ms，p99 3/6 胜出、平均快 0.29ms。verified nodes 平均是原 TriePilot 的
+    150.0x、是 budget8 的 1.01x。结论：static fallback 只作为负面诊断证据保留，不能作为
+    主方法、可选 baseline 或后续开发入口；后续要做 selective fallback / marginal utility，只在
+    replay 证明接受收益足以抵消 shape cost 的 regime 上提高预算。
 ```
 
 尚未完成：
 
 ```text
 [ ] per-request budget 已接入最小 allocator baselines，正式 TriePilot regime encoder / Strategy Bank /
-    utility estimator 第一版已能在线运行并写出 telemetry；但仍是 page_size=1 variable verification path，
-    尚未实现 Slow Explorer，也尚未接入更复杂 tree shape。
+    utility estimator 第一版已能在线运行并写出 telemetry；shape bucket batch_max runtime path 已通过
+    A100 smoke 与同构诊断 sweep，但尚未实现 Slow Explorer，也尚未接入更复杂 tree shape。
 [ ] Step 1 已完成第一版 static tier library 与一组 match_window / bfs_breadth 对照；尚未做 match mode
     sweep、更长输出长度、更大样本数、多随机种子或正式主表规模复跑。
-[ ] Session 5 已完成 InstructCoder+GSM8K 与 CNN/DailyMail+random 两组 50/50 的小型
-    B_batch=16/32/64 诊断 sweep，并已补强 batch_global_budget2/4/8/16 强静态 baseline；
-    尚未覆盖四组 mixed pairs、20/80 与 80/20、B_batch=100/160、更长输出、更大样本、
-    多 seed 或正式 baseline 主表。
+[ ] Session 5 已完成四组 mixed pairs 的 50/50 小主表、20/80 与 80/20 single-seed
+    比例敏感性扩展，并已完成 B_batch=100/160、output_len=64、NUM_PROMPTS=64 的
+    single-seed larger-budget / longer-output shape-bucket 增量验证、compact path 小子集
+    ablation，以及 50/50、20/80、80/20、B_batch=100/160 的新增双 seed shape-bucket
+    稳健性验证；尚未补更多输出长度/样本数或完整正式 baseline 主表。
+[ ] mean TPOT 优化已完成 static fallback 负面诊断且已回退实现：当前 shape-bucket TriePilot
+    已稳定降低 verified nodes 并改善 p99，fallback 退化路径能追回 mean 但 verified-node 与
+    p99 代价过大，不能进入后续主线。后续仍需要基于 trace replay / oracle 做 selective fallback
+    或 marginal utility model，显式纳入 accepted-token gain、verified-node cost、shape padding、
+    CUDA graph shape 与 batch composition。
 [ ] 尚未跑正式 baseline throughput / TPOT / wasted-node 主表；当前已有 AR、static NGRAM smoke 与
     random-ids / main workload static tier 第一版结果，以及 Session 5 allocator smoke，但还不是完整主表。
 ```
@@ -758,19 +1039,18 @@ Best static：
 下一步：
 
 ```text
-继续 Session 5：不要直接启动全量 360 次 mixed workload 主表。下一步优先优化 SGLang variable
-verification runtime path，核心目标是让 per-request heterogeneous budget 尽量保持 CUDA graph 可用，
-或至少避免 compact verify input 触发的 target_forward 慢路径。候选方向包括：按有效 draft length
-做 shape bucket、对 variable allocation 做 graph-compatible padding / mask、将 request-level budget
-映射到少数 batch-global-like micro batches，或在 Strategy Bank 中加入 graph-safety penalty，避免
-收益不足时走慢路径。优化验证标准：在保持 verified draft nodes 明显下降的前提下，复跑
-20260513_0945_session5_bbatch_diagnostic_seed20260512 同构诊断，观察
-cuda_graph_token_shape_ok_ratio、mean_target_forward_time_us、mean TPOT 和 p99 TPOT 是否同时改善。
-只有该路径问题缓解后，再扩展到四组 mixed workload、50/50+20/80+80/20、
-B_batch=16/32/64/100/160 的正式主表。CNN/DailyMail+random 上 TriePilot 在 B=16/32 的
-p99 TPOT 已有改善信号，应作为长上下文尾部延迟重点观察项；强静态 baseline 需同时报告
-batch_global_budget2/4/8/16 或 tuned best-static。Step 1 的 match mode、长输出、多 seed 仍作为
-主表复跑前的稳健性补充。
+继续 Session 5：50/50、20/80、80/20 的 B_batch=100/160 新增双 seed 结果已经确认
+shape-bucket 在 p99 TPOT 与 accepted_per_verified_node 上稳定优于 tuned batch-global，
+但 mean TPOT 仍不是全面胜出；JSON/tool-call+ShareGPT 的 completed=59/64 已通过
+tokenizer/context-aware materialize 补样修正，后续正式主表应默认启用 fill-filtered 并记录
+替换样本数。暂不直接启动全量 mixed workload 主表。mean-aware static fallback 负面诊断已经证明：
+mean TPOT 可以靠接近 budget8 的 fallback 追回，但这会基本放弃 verified-node 节省并损伤 p99；
+该退化策略实现已回退，不能作为后续测试或开发入口。
+下一步优先做 selective fallback / marginal allocator：基于已有 trace replay 估计每个 regime 的
+边际 accepted-token gain 与 shape cost，只允许少数高置信 regime 从 off/tiny 升到 2/4/8，并把
+fallback gate、shape-padding penalty、runtime-path penalty 和 workload-composition 特征写入
+Strategy Bank / Utility Estimator。并行准备 Step 1 的 match mode / tree shape 与更长输出补充，
+作为正式主表前的稳健性材料。
 ```
 
 ---
@@ -1303,8 +1583,42 @@ actual verified draft nodes，但 heterogeneous path 会离开 CUDA graph。
 [x] TriePilot allocation 第一版：Regime Encoder / Strategy Bank / Utility Estimator / Greedy Budget Allocator
 [x] batch-global tuned tier 第一版：batch_global_budget2/4/8/16
 [x] 小型 B_batch 诊断 sweep：InstructCoder+GSM8K、CNN/DailyMail+random，B_batch=16/32/64
-[ ] variable verification runtime path 优化：CUDA graph shape / target_forward 慢路径
-[ ] 正式 mixed workload 主表：四组 mixed pairs、三组比例、多 B_batch、多 seed
+[x] shape bucket runtime path：将 per-request budget 量化到 0/1、2、4、8、16 等固定 bucket，
+    按 bucket 构造 graph-compatible verify input，并记录 bucket padding / CUDA graph shape telemetry
+[x] shape bucket 复跑诊断：复跑 20260513_0945_session5_bbatch_diagnostic_seed20260512 同构配置，
+    对比 compact variable path、batch_global_budget2/4/8/16 与 shape-bucket TriePilot；默认
+    CUDA_GRAPH_MAX_BS=32 shape-bucket 在长上下文 OOM，cgbs8 补跑完成并给出可用结果
+[x] cgbs8 batch-global fairness smoke：在相同 CUDA_GRAPH_MAX_BS=8 / MAX_RUNNING_REQUESTS=8
+    约束下复跑 batch_global_budget2/4/8/16，确认 shape-bucket 长上下文收益不是单纯来自
+    max_running / cuda_graph cap
+[x] 四组 mixed pairs 50/50 小主表：B_batch=16/32/64，固定 cgbs8 / max_running=8，
+    对比 batch_global_budget2/4/8/16、compact TriePilot 与 shape-bucket TriePilot
+[x] 四组 mixed pairs 20/80 与 80/20 比例敏感性：B_batch=16/32/64，固定 cgbs8 /
+    max_running=8，对比 batch_global_budget2/4/8/16、compact TriePilot 与 shape-bucket TriePilot
+[x] larger-budget / longer-output 增量验证：B_batch=100/160、NUM_PROMPTS=64、
+    sharegpt_output_len=64，固定 cgbs8 / max_running=8，对比 batch_global_budget2/4/8/16
+    与 shape-bucket TriePilot
+[x] compact TriePilot runtime ablation 小子集：JSON/tool-call+ShareGPT 与 CNN/DailyMail+random，
+    ratio=50/50 和 80/20，B_batch=100/160，NUM_PROMPTS=64、sharegpt_output_len=64，
+    固定 cgbs8 / max_running=8，对比 compact path 与既有 shape-bucket 同配置结果
+[x] shape-bucket 多 seed 稳健性：四组 mixed pairs、ratio=50/50、B_batch=100/160，
+    NUM_PROMPTS=64、sharegpt_output_len=64，固定 cgbs8 / max_running=8，补
+    seed=20260513 与 seed=20260514，对比 batch_global_budget2/4/8/16 与
+    shape-bucket TriePilot
+[x] materialize tokenizer/context-aware 补样：修正 JSON/tool-call+ShareGPT 因超长 prompt 被
+    bench_serving 过滤导致 completed=59/64 或 62/64 的 caveat
+[x] shape-bucket ratio 多 seed 稳健性：四组 mixed pairs、ratio=20/80 与 80/20、
+    B_batch=100/160，NUM_PROMPTS=64、sharegpt_output_len=64，固定 cgbs8 / max_running=8，
+    补 seed=20260513 与 seed=20260514，对比 batch_global_budget2/4/8/16 与
+    shape-bucket TriePilot
+[x] mean-aware static fallback 负面诊断与回退：临时实现过 triepilot_mean_aware_allocation 并完成
+    A100 TDD、py_compile 与 3 组 workload × 2 ratio diagnostic sweep；因结果退化为
+    batch_global_budget8，已回退 policy / CLI choice / 测试断言 / telemetry 字段，后续不作为
+    可选策略或开发入口
+[ ] selective mean-aware utility / cost model 优化：基于 trace replay 与 oracle 上界，加入
+    selective fallback gate、shape-padding penalty、runtime-path penalty 与 workload-composition
+    特征，目标是在尽量保持 p99 与 verified-node 优势的同时缩小 mean TPOT 差距
+[ ] 正式 mixed workload 主表：更大样本、多 seed、完整主公平 baseline 与必要消融
 ```
 
 产出：
@@ -1320,6 +1634,47 @@ actual verified draft nodes，但 heterogeneous path 会离开 CUDA graph。
     /root/TriePilot/runs/20260513_1030_session5_batch_global_baseline_seed20260512/session5_sweep_summary.csv
 [x] CUDA graph / target-forward diagnostic：
     /root/TriePilot/runs/20260513_1045_instrumentation_runtime_smoke_seed20260512/session5_sweep_summary.csv
+[x] shape bucket runtime smoke：
+    /root/TriePilot/runs/20260513_shape_bucket_metadata_fix_smoke_seed20260512/session5_sweep_summary.csv
+[x] shape bucket TriePilot c8 smoke：
+    /root/TriePilot/runs/20260513_shape_bucket_triepilot_c8_smoke_seed20260512/session5_sweep_summary.csv
+[x] shape bucket 同构诊断复跑：
+    /root/TriePilot/runs/20260513_1254_session5_shape_bucket_diagnostic_seed20260512/compact_off/session5_sweep_summary.csv
+    /root/TriePilot/runs/20260513_1254_session5_shape_bucket_diagnostic_seed20260512/shape_bucket_batch_max_cgbs8/session5_sweep_summary.csv
+    /root/TriePilot/runs/20260513_1254_session5_shape_bucket_diagnostic_seed20260512/comparison_session5_shape_bucket_cgbs8.csv
+[x] cgbs8 batch-global fairness smoke：
+    /root/TriePilot/runs/20260513_1445_session5_cgbs8_batch_global_fairness_seed20260512/session5_sweep_summary.csv
+    /root/TriePilot/runs/20260513_1445_session5_cgbs8_batch_global_fairness_seed20260512/comparison_shape_bucket_vs_batch_global_cgbs8_fairness.csv
+[x] 四组 mixed pairs 50/50 小主表：
+    /root/TriePilot/runs/20260513_1555_session5_mixed50_small_table_seed20260512/combined_session5_mixed50_small_table.csv
+    /root/TriePilot/runs/20260513_1555_session5_mixed50_small_table_seed20260512/comparison_session5_mixed50_small_table.csv
+    /root/TriePilot/runs/20260513_1555_session5_mixed50_small_table_seed20260512/notes.md
+[x] 四组 mixed pairs 20/80 与 80/20 比例敏感性：
+    /root/TriePilot/runs/20260513_2030_session5_ratio_sensitivity_seed20260512/combined_session5_ratio_sensitivity.csv
+    /root/TriePilot/runs/20260513_2030_session5_ratio_sensitivity_seed20260512/comparison_session5_ratio_sensitivity.csv
+    /root/TriePilot/runs/20260513_2030_session5_ratio_sensitivity_seed20260512/notes.md
+[x] larger-budget / longer-output shape-bucket 增量验证：
+    /root/TriePilot/runs/20260513_2335_session5_larger_budget_out64_shape_bucket_seed20260512/session5_sweep_summary.csv
+    /root/TriePilot/runs/20260513_2335_session5_larger_budget_out64_shape_bucket_seed20260512/comparison_session5_larger_budget_out64_shape_bucket.csv
+    /root/TriePilot/runs/20260513_2335_session5_larger_budget_out64_shape_bucket_seed20260512/analysis_notes.md
+[x] compact TriePilot runtime ablation 小子集：
+    /root/TriePilot/runs/20260514_0030_session5_compact_ablation_out64_seed20260512/combined_compact_ablation_out64.csv
+    /root/TriePilot/runs/20260514_0030_session5_compact_ablation_out64_seed20260512/comparison_compact_vs_shape_bucket_out64.csv
+    /root/TriePilot/runs/20260514_0030_session5_compact_ablation_out64_seed20260512/analysis_compact_vs_shape_bucket_out64.md
+[x] shape-bucket 多 seed 稳健性：
+    /root/TriePilot/runs/20260514_0735_session5_multiseed_shape_bucket_robustness/combined_multiseed_shape_bucket_robustness.csv
+    /root/TriePilot/runs/20260514_0735_session5_multiseed_shape_bucket_robustness/comparison_multiseed_shape_bucket_robustness.csv
+    /root/TriePilot/runs/20260514_0735_session5_multiseed_shape_bucket_robustness/analysis_multiseed_shape_bucket_robustness.md
+[x] materialize filter smoke：
+    /root/TriePilot/runs/20260514_materialize_filter_smoke/bench_json_tool_sharegpt_r0p5.json
+[x] shape-bucket ratio 多 seed 稳健性：
+    /root/TriePilot/runs/20260514_1120_session5_ratio_multiseed_shape_bucket_robustness/combined_ratio_multiseed_shape_bucket_robustness.csv
+    /root/TriePilot/runs/20260514_1120_session5_ratio_multiseed_shape_bucket_robustness/comparison_ratio_multiseed_shape_bucket_robustness.csv
+    /root/TriePilot/runs/20260514_1120_session5_ratio_multiseed_shape_bucket_robustness/analysis_ratio_multiseed_shape_bucket_robustness.md
+[x] mean-aware static fallback negative diagnostic（结果保留，策略实现已回退）：
+    /root/TriePilot/runs/20260514_1600_session5_mean_aware_policy_diagnostic/session5_sweep_summary.csv
+    /root/TriePilot/runs/20260514_1600_session5_mean_aware_policy_diagnostic/comparison_mean_aware_policy_diagnostic.csv
+    /root/TriePilot/runs/20260514_1600_session5_mean_aware_policy_diagnostic/analysis_mean_aware_policy_diagnostic.md
 ```
 
 ### Session 6：实现 TriePilot
