@@ -16,6 +16,7 @@ MAX_CONVERTED_ROWS="${MAX_CONVERTED_ROWS:-1000}"
 MATCH_WINDOW="${MATCH_WINDOW:-12}"
 BFS_BREADTH="${BFS_BREADTH:-4}"
 BRANCH_LENGTH="${BRANCH_LENGTH:-18}"
+NGRAM_MATCH_TYPE="${NGRAM_MATCH_TYPE:-BFS}"
 NUM_PROMPTS="${NUM_PROMPTS:-16}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-8}"
 REQUEST_RATE="${REQUEST_RATE:-8}"
@@ -156,6 +157,7 @@ git rev-parse HEAD > "${GIT_COMMIT_PATH}" || true
   echo "match_window: ${MATCH_WINDOW}"
   echo "bfs_breadth: ${BFS_BREADTH}"
   echo "branch_length: ${BRANCH_LENGTH}"
+  echo "ngram_match_type: ${NGRAM_MATCH_TYPE}"
   echo "num_prompts: ${NUM_PROMPTS}"
   echo "max_concurrency: ${MAX_CONCURRENCY}"
   echo "request_rate: ${REQUEST_RATE}"
@@ -221,6 +223,7 @@ for budget in ${BUDGETS}; do
   export MATCH_WINDOW
   export BFS_BREADTH
   export BRANCH_LENGTH
+  export NGRAM_MATCH_TYPE
   export WORKSPACE_SGLANG_SRC="${WORKSPACE}/third_party/sglang_flex/python"
   export TRIEPILOT_TRACE_PATH="${trace_path}"
   export TRIEPILOT_RUN_ID="${RUN_ID}_budget_${budget}"
@@ -294,7 +297,7 @@ for budget in ${BUDGETS}; do
   fi
 done
 
-SUMMARY_PATH="${SUMMARY_PATH}" NOTES_PATH="${NOTES_PATH}" RUN_DIR="${RUN_DIR}" BUDGETS="${BUDGETS}" DATASET_NAME="${DATASET_NAME}" BENCH_DATASET_NAME="${BENCH_DATASET_NAME}" MATCH_WINDOW="${MATCH_WINDOW}" BFS_BREADTH="${BFS_BREADTH}" BRANCH_LENGTH="${BRANCH_LENGTH}" .venv/bin/python - <<'PY'
+SUMMARY_PATH="${SUMMARY_PATH}" NOTES_PATH="${NOTES_PATH}" RUN_DIR="${RUN_DIR}" BUDGETS="${BUDGETS}" DATASET_NAME="${DATASET_NAME}" BENCH_DATASET_NAME="${BENCH_DATASET_NAME}" MATCH_WINDOW="${MATCH_WINDOW}" BFS_BREADTH="${BFS_BREADTH}" BRANCH_LENGTH="${BRANCH_LENGTH}" NGRAM_MATCH_TYPE="${NGRAM_MATCH_TYPE}" .venv/bin/python - <<'PY'
 import csv
 import json
 import os
@@ -325,6 +328,7 @@ bench_dataset_name = os.environ["BENCH_DATASET_NAME"]
 match_window = int(os.environ["MATCH_WINDOW"])
 bfs_breadth = int(os.environ["BFS_BREADTH"])
 branch_length = int(os.environ["BRANCH_LENGTH"])
+ngram_match_type = os.environ["NGRAM_MATCH_TYPE"]
 
 for budget in budgets:
     tier_dir = run_dir / f"budget_{budget}"
@@ -345,6 +349,7 @@ for budget in budgets:
         "match_window": match_window,
         "bfs_breadth": bfs_breadth,
         "branch_length": branch_length,
+        "ngram_match_type": ngram_match_type,
         "budget": budget,
         "speculation": "none" if budget == 0 else "ngram",
         "trace_events": len(events),
@@ -387,7 +392,7 @@ notes = [
     f"Run directory: `{run_dir}`",
     f"Summary: `{summary_path}`",
     f"Dataset: `{dataset_name}` (`{bench_dataset_name}`)",
-    f"Shape: match_window={match_window}, bfs_breadth={bfs_breadth}, branch_length={branch_length}",
+    f"Shape: match_type={ngram_match_type}, match_window={match_window}, bfs_breadth={bfs_breadth}, branch_length={branch_length}",
     "",
     "| budget | speculation | out tok/s | mean TPOT ms | p99 TPOT ms | trace events | accepted/verified | wasted ratio | mean verify us | mean match depth | mean candidates |",
     "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",

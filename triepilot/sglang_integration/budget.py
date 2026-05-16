@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 import random
 from typing import Any, Iterable
 
@@ -6,6 +7,27 @@ TRIEPILOT_DRAFT_BUDGET_KEY = "triepilot_draft_budget"
 TRIEPILOT_ACCEPT_EMA_ATTR = "triepilot_accept_len_ema"
 TRIEPILOT_NEGATIVE_GAIN_ATTR = "triepilot_negative_gain_count"
 TRIEPILOT_DEFAULT_SHAPE_BUCKETS = (2, 4, 8, 16)
+TRIEPILOT_MARGINAL_BUDGET_LEVELS = (0, 2, 4)
+TRIEPILOT_MIN_MARGINAL_GAIN_PER_NODE = 0.03
+TRIEPILOT_RECOVERY_ENV = "TRIEPILOT_SELECTIVE_RECOVERY"
+TRIEPILOT_RECOVERY_BUDGET_ENV = "TRIEPILOT_SELECTIVE_RECOVERY_BUDGET"
+TRIEPILOT_RECOVERY_COOLDOWN_ENV = "TRIEPILOT_SELECTIVE_RECOVERY_COOLDOWN_STEPS"
+TRIEPILOT_RECOVERY_MIN_GAIN_ENV = "TRIEPILOT_SELECTIVE_RECOVERY_MIN_GAIN"
+TRIEPILOT_REQUEST_LOCAL_RECOVERY_ENV = "TRIEPILOT_REQUEST_LOCAL_RECOVERY"
+TRIEPILOT_REQUEST_LOCAL_RECOVERY_PROBE_BUDGET_ENV = (
+    "TRIEPILOT_REQUEST_LOCAL_RECOVERY_PROBE_BUDGET"
+)
+TRIEPILOT_REQUEST_LOCAL_RECOVERY_MAX_PROBES_ENV = (
+    "TRIEPILOT_REQUEST_LOCAL_RECOVERY_MAX_PROBES"
+)
+TRIEPILOT_REQUEST_LOCAL_RECOVERY_ACCEPT_THRESHOLD_ENV = (
+    "TRIEPILOT_REQUEST_LOCAL_RECOVERY_ACCEPT_THRESHOLD"
+)
+TRIEPILOT_REQUEST_LOCAL_RECOVERY_SUSTAIN_BUDGET_ENV = (
+    "TRIEPILOT_REQUEST_LOCAL_RECOVERY_SUSTAIN_BUDGET"
+)
+TRIEPILOT_REQUEST_LOCAL_PROBE_COUNT_ATTR = "triepilot_request_local_probe_count"
+TRIEPILOT_ABLATION_MODE_ENV = "TRIEPILOT_ABLATION_MODE"
 
 CUSTOM_POLICY_NAMES = {"", "custom", "custom_params", "per_request_custom"}
 REQUEST_ALLOCATION_POLICIES = {
@@ -28,6 +50,11 @@ class StrategyRecord:
     confidence: float
     exploration_allowed: bool
     last_update_step: int = 0
+    positive_observations: int = 0
+    max_observed_gain_per_node: float = 0.0
+    zero_gain_streak: int = 0
+    last_positive_step: int = -1
+    last_recovery_probe_step: int = -1_000_000
 
 
 def _safe_budget_set(max_budget: int) -> tuple[int, ...]:
@@ -128,8 +155,17 @@ class TriePilotStrategyBank:
         )
         if allocated_budget > 0 and observed_gain >= 0.20:
             record.preferred_budget = min(self.max_budget, max(record.preferred_budget, allocated_budget))
+            record.positive_observations += 1
+            record.max_observed_gain_per_node = max(
+                record.max_observed_gain_per_node, observed_gain
+            )
+            record.zero_gain_streak = 0
+            record.last_positive_step = int(step_id)
         elif allocated_budget > 0 and observed_gain <= 0.01:
             record.preferred_budget = max(0, min(record.preferred_budget, allocated_budget // 2))
+            record.zero_gain_streak += 1
+        elif allocated_budget > 0:
+            record.zero_gain_streak = 0
         record.confidence = min(1.0, record.confidence + 0.10)
         record.last_update_step = int(step_id)
         return record
@@ -376,6 +412,63 @@ def _negative_gain_count(req: Any) -> int:
         return 0
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _ablation_modes() -> tuple[str, ...]:
+    aliases = {
+        "none": "",
+        "off": "",
+        "disabled": "",
+        "wo_trie_features": "no_trie_features",
+        "without_trie_features": "no_trie_features",
+        "no_trie": "no_trie_features",
+        "wo_history": "no_history",
+        "without_history": "no_history",
+        "wo_serving": "no_serving_pressure",
+        "no_serving": "no_serving_pressure",
+        "without_serving": "no_serving_pressure",
+        "without_serving_pressure": "no_serving_pressure",
+        "wo_strategy_bank": "no_strategy_bank",
+        "without_strategy_bank": "no_strategy_bank",
+    }
+    raw_value = os.environ.get(TRIEPILOT_ABLATION_MODE_ENV, "")
+    tokens = [
+        token.strip().lower().replace("-", "_")
+        for token in raw_value.replace(";", ",").replace(" ", ",").split(",")
+        if token.strip()
+    ]
+    modes: list[str] = []
+    for token in tokens:
+        mode = aliases.get(token, token)
+        if mode and mode not in modes:
+            modes.append(mode)
+    return tuple(modes)
+
+
+def _ablation_enabled(name: str, modes: tuple[str, ...] | None = None) -> bool:
+    normalized = name.strip().lower().replace("-", "_")
+    return normalized in (modes if modes is not None else _ablation_modes())
+
+
 def _bucket_match_depth(match_depth: float) -> str:
     if match_depth >= 4:
         return "high_match"
@@ -419,17 +512,33 @@ def _encode_regime_id(
     structural_features: list[dict[str, Any]] | None,
     index: int,
     batch_size: int,
+    disable_trie_features: bool = False,
+    disable_history: bool = False,
+    disable_serving_pressure: bool = False,
 ) -> str:
-    match_bucket = _bucket_match_depth(
-        _feature_score(structural_features, index, "match_depth")
+    match_depth = 0.0 if disable_trie_features else _feature_score(
+        structural_features, index, "match_depth"
     )
+    candidate_count = 0.0 if disable_trie_features else _feature_score(
+        structural_features, index, "candidate_count"
+    )
+    branch_entropy = 0.0 if disable_trie_features else _feature_score(
+        structural_features, index, "branch_entropy"
+    )
+    top_branch_ratio = 0.0 if disable_trie_features else _feature_score(
+        structural_features, index, "top_branch_ratio"
+    )
+    accept_ema = 0.0 if disable_history else _accept_ema(req)
+    effective_batch_size = 1 if disable_serving_pressure else batch_size
+
+    match_bucket = _bucket_match_depth(match_depth)
     branch_bucket = _bucket_branch(
-        candidate_count=_feature_score(structural_features, index, "candidate_count"),
-        branch_entropy=_feature_score(structural_features, index, "branch_entropy"),
-        top_branch_ratio=_feature_score(structural_features, index, "top_branch_ratio"),
+        candidate_count=candidate_count,
+        branch_entropy=branch_entropy,
+        top_branch_ratio=top_branch_ratio,
     )
-    accept_bucket = _bucket_accept(_accept_ema(req))
-    load_bucket = _bucket_load(batch_size)
+    accept_bucket = _bucket_accept(accept_ema)
+    load_bucket = _bucket_load(effective_batch_size)
     return f"R_{match_bucket}_{branch_bucket}_{accept_bucket}_{load_bucket}"
 
 
@@ -439,8 +548,18 @@ def _blank_allocation_metadata(batch_size: int) -> dict[str, list[Any]]:
         "strategy_bank_hits": [False] * batch_size,
         "expected_gain_per_node": [0.0] * batch_size,
         "preferred_budgets": [0] * batch_size,
+        "budget_caps": [0] * batch_size,
+        "marginal_upgrade_steps": [0] * batch_size,
+        "marginal_upgrade_gains": [0.0] * batch_size,
+        "recovery_probe_flags": [False] * batch_size,
+        "request_local_probe_flags": [False] * batch_size,
+        "request_local_probe_counts": [0] * batch_size,
+        "positive_observations": [0] * batch_size,
+        "max_observed_gain_per_node": [0.0] * batch_size,
+        "zero_gain_streaks": [0] * batch_size,
         "strategy_confidences": [0.0] * batch_size,
         "exploration_flags": [False] * batch_size,
+        "ablation_modes": list(_ablation_modes()),
     }
 
 
@@ -455,6 +574,127 @@ def _return_budget_result(
     return budgets, active_lengths
 
 
+def _marginal_budget_cap(
+    regime_id: str,
+    record: StrategyRecord,
+    *,
+    score: float,
+    max_budget: int,
+) -> int:
+    if record.preferred_budget <= 0 or score < 0.12:
+        return 0
+    preferred_budget = min(max(int(record.preferred_budget), 0), int(max_budget))
+    if (
+        "high_match" in regime_id
+        and "low_entropy" in regime_id
+        and "high_accept" in regime_id
+    ):
+        return min(preferred_budget, int(max_budget), 4)
+    return min(preferred_budget, int(max_budget), 2)
+
+
+def _stable_recovery_regime(regime_id: str) -> bool:
+    return "high_match" in regime_id
+
+
+def _selective_recovery_cap(
+    regime_id: str,
+    record: StrategyRecord,
+    *,
+    step_id: int,
+    max_budget: int,
+) -> int:
+    if not _env_flag(TRIEPILOT_RECOVERY_ENV):
+        return 0
+    if not _stable_recovery_regime(regime_id):
+        return 0
+    if record.positive_observations <= 0:
+        return 0
+    min_gain = _env_float(TRIEPILOT_RECOVERY_MIN_GAIN_ENV, 0.20)
+    if record.max_observed_gain_per_node < min_gain:
+        return 0
+    cooldown = max(1, _env_int(TRIEPILOT_RECOVERY_COOLDOWN_ENV, 24))
+    if int(step_id) - int(record.last_recovery_probe_step) < cooldown:
+        return 0
+    recovery_budget = max(1, _env_int(TRIEPILOT_RECOVERY_BUDGET_ENV, 2))
+    return min(int(max_budget), recovery_budget)
+
+
+def _request_local_probe_count(req: Any) -> int:
+    try:
+        return int(getattr(req, TRIEPILOT_REQUEST_LOCAL_PROBE_COUNT_ATTR, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _request_local_recovery_cap(
+    req: Any,
+    regime_id: str,
+    *,
+    max_budget: int,
+) -> int:
+    if not _env_flag(TRIEPILOT_REQUEST_LOCAL_RECOVERY_ENV):
+        return 0
+    if not _stable_recovery_regime(regime_id):
+        return 0
+    accept_threshold = max(
+        0.0,
+        _env_float(TRIEPILOT_REQUEST_LOCAL_RECOVERY_ACCEPT_THRESHOLD_ENV, 0.75),
+    )
+    if _accept_ema(req) >= accept_threshold:
+        sustain_budget = max(
+            1, _env_int(TRIEPILOT_REQUEST_LOCAL_RECOVERY_SUSTAIN_BUDGET_ENV, 4)
+        )
+        return min(int(max_budget), sustain_budget)
+    max_probes = max(0, _env_int(TRIEPILOT_REQUEST_LOCAL_RECOVERY_MAX_PROBES_ENV, 2))
+    if max_probes <= 0 or _request_local_probe_count(req) >= max_probes:
+        return 0
+    probe_budget = max(
+        1, _env_int(TRIEPILOT_REQUEST_LOCAL_RECOVERY_PROBE_BUDGET_ENV, 2)
+    )
+    return min(int(max_budget), probe_budget)
+
+
+def _marginal_budget_levels(record: StrategyRecord, cap: int) -> list[int]:
+    values = {
+        min(max(int(level), 0), int(cap))
+        for level in TRIEPILOT_MARGINAL_BUDGET_LEVELS
+    }
+    values.update(
+        min(max(int(budget), 0), int(cap))
+        for budget in record.safe_budget_set
+        if int(budget) <= 4
+    )
+    return sorted(value for value in values if value <= int(cap))
+
+
+def _next_marginal_budget(
+    current_budget: int,
+    *,
+    record: StrategyRecord,
+    cap: int,
+) -> int | None:
+    for budget in _marginal_budget_levels(record, cap):
+        if budget > current_budget:
+            return budget
+    return None
+
+
+def _marginal_gain_per_node(
+    *,
+    score: float,
+    record: StrategyRecord,
+    current_budget: int,
+    next_budget: int,
+) -> float:
+    if next_budget <= current_budget:
+        return 0.0
+    confidence = max(0.10, min(1.0, float(record.confidence)))
+    step_decay = 1.0 if current_budget <= 0 else 0.65
+    padding_penalty = 0.005 * max(int(next_budget) - int(current_budget), 1)
+    return max(0.0, float(score) * confidence * step_decay - padding_penalty)
+
+
 def _allocate_triepilot(
     reqs: list[Any],
     *,
@@ -462,12 +702,24 @@ def _allocate_triepilot(
     strategy_bank: TriePilotStrategyBank,
     max_budget: int,
     total_budget: int,
+    step_id: int,
 ) -> tuple[list[int], dict[str, Any]]:
     records: list[StrategyRecord] = []
     regime_ids: list[str] = []
     hits: list[bool] = []
     scores: list[float] = []
     preferred_budgets: list[int] = []
+    budget_caps: list[int] = []
+    recovery_cap_flags: list[bool] = []
+    request_local_cap_flags: list[bool] = []
+    recovery_claimed_regimes: set[str] = set()
+    ablation_modes = _ablation_modes()
+    disable_trie_features = _ablation_enabled("no_trie_features", ablation_modes)
+    disable_history = _ablation_enabled("no_history", ablation_modes)
+    disable_serving_pressure = _ablation_enabled(
+        "no_serving_pressure", ablation_modes
+    )
+    disable_strategy_bank = _ablation_enabled("no_strategy_bank", ablation_modes)
 
     for index, req in enumerate(reqs):
         regime_id = _encode_regime_id(
@@ -475,36 +727,141 @@ def _allocate_triepilot(
             structural_features=structural_features,
             index=index,
             batch_size=len(reqs),
+            disable_trie_features=disable_trie_features,
+            disable_history=disable_history,
+            disable_serving_pressure=disable_serving_pressure,
         )
-        record, hit = strategy_bank.lookup(regime_id)
-        negative_penalty = min(0.25, 0.05 * _negative_gain_count(req))
+        if disable_strategy_bank:
+            record = _infer_strategy_record(regime_id, max_budget)
+            hit = False
+        else:
+            record, hit = strategy_bank.lookup(regime_id)
+        negative_penalty = 0.0 if disable_history else min(
+            0.25, 0.05 * _negative_gain_count(req)
+        )
         score = max(0.0, record.expected_gain_per_node - negative_penalty)
         regime_ids.append(regime_id)
         records.append(record)
         hits.append(hit)
         scores.append(score)
-        preferred_budgets.append(min(max(int(record.preferred_budget), 0), max_budget))
+        preferred_budget = min(max(int(record.preferred_budget), 0), max_budget)
+        preferred_budgets.append(preferred_budget)
+        budget_cap = _marginal_budget_cap(
+            regime_id,
+            record,
+            score=score,
+            max_budget=max_budget,
+        )
+        recovery_cap = 0
+        if budget_cap <= 0 and regime_id not in recovery_claimed_regimes:
+            recovery_cap = _selective_recovery_cap(
+                regime_id,
+                record,
+                step_id=step_id,
+                max_budget=max_budget,
+            )
+            if recovery_cap > 0:
+                recovery_claimed_regimes.add(regime_id)
+        request_local_cap = 0
+        if max(budget_cap, recovery_cap) <= 0:
+            request_local_cap = _request_local_recovery_cap(
+                req,
+                regime_id,
+                max_budget=max_budget,
+            )
+        budget_caps.append(max(budget_cap, recovery_cap, request_local_cap))
+        recovery_cap_flags.append(recovery_cap > 0)
+        request_local_cap_flags.append(request_local_cap > 0)
 
     budgets = [0] * len(reqs)
     remaining = max(int(total_budget), 0)
-    ranked = sorted(range(len(reqs)), key=lambda idx: (-scores[idx], idx))
-    for idx in ranked:
-        if remaining <= 0:
+    upgrade_steps = [0] * len(reqs)
+    upgrade_gains = [0.0] * len(reqs)
+
+    while remaining > 0:
+        best_candidate: tuple[float, int, int, int] | None = None
+        for idx, record in enumerate(records):
+            cap = budget_caps[idx]
+            if cap <= budgets[idx]:
+                continue
+            next_budget = _next_marginal_budget(
+                budgets[idx],
+                record=record,
+                cap=cap,
+            )
+            if next_budget is None:
+                continue
+            delta = next_budget - budgets[idx]
+            if delta > remaining:
+                continue
+            gain_per_node = _marginal_gain_per_node(
+                score=scores[idx],
+                record=record,
+                current_budget=budgets[idx],
+                next_budget=next_budget,
+            )
+            if (
+                (recovery_cap_flags[idx] or request_local_cap_flags[idx])
+                and budgets[idx] <= 0
+            ):
+                gain_per_node = max(
+                    gain_per_node, TRIEPILOT_MIN_MARGINAL_GAIN_PER_NODE
+                )
+            if gain_per_node < TRIEPILOT_MIN_MARGINAL_GAIN_PER_NODE:
+                continue
+            candidate = (gain_per_node, -idx, idx, next_budget)
+            if best_candidate is None or candidate > best_candidate:
+                best_candidate = candidate
+
+        if best_candidate is None:
             break
-        preferred = preferred_budgets[idx]
-        if preferred <= 0 or scores[idx] <= 0.0:
-            continue
-        take = min(preferred, remaining, max_budget)
-        budgets[idx] = take
-        remaining -= take
+        gain_per_node, _, idx, next_budget = best_candidate
+        delta = next_budget - budgets[idx]
+        budgets[idx] = next_budget
+        remaining -= delta
+        upgrade_steps[idx] += 1
+        upgrade_gains[idx] += gain_per_node * delta
+
+    recovery_probe_flags = [
+        bool(recovery_cap_flags[idx] and budgets[idx] > 0)
+        for idx in range(len(reqs))
+    ]
+    request_local_probe_flags = [
+        bool(request_local_cap_flags[idx] and budgets[idx] > 0)
+        for idx in range(len(reqs))
+    ]
+    for idx, did_probe in enumerate(recovery_probe_flags):
+        if did_probe:
+            records[idx].last_recovery_probe_step = int(step_id)
+    request_local_probe_counts: list[int] = []
+    for idx, did_probe in enumerate(request_local_probe_flags):
+        count = _request_local_probe_count(reqs[idx])
+        if did_probe:
+            count += 1
+            setattr(reqs[idx], TRIEPILOT_REQUEST_LOCAL_PROBE_COUNT_ATTR, count)
+        request_local_probe_counts.append(count)
 
     metadata = {
         "regime_ids": regime_ids,
         "strategy_bank_hits": hits,
         "expected_gain_per_node": scores,
         "preferred_budgets": preferred_budgets,
+        "budget_caps": budget_caps,
+        "marginal_upgrade_steps": upgrade_steps,
+        "marginal_upgrade_gains": upgrade_gains,
+        "recovery_probe_flags": recovery_probe_flags,
+        "request_local_probe_flags": request_local_probe_flags,
+        "request_local_probe_counts": request_local_probe_counts,
+        "positive_observations": [
+            record.positive_observations for record in records
+        ],
+        "max_observed_gain_per_node": [
+            record.max_observed_gain_per_node for record in records
+        ],
+        "zero_gain_streaks": [record.zero_gain_streak for record in records],
         "strategy_confidences": [record.confidence for record in records],
         "exploration_flags": [record.exploration_allowed for record in records],
+        "ablation_modes": list(ablation_modes),
     }
     return budgets, metadata
 
@@ -576,6 +933,7 @@ def resolve_triepilot_draft_budgets(
                 strategy_bank=bank,
                 max_budget=max_budget,
                 total_budget=total_budget,
+                step_id=step_id,
             )
         return _return_budget_result(
             requested_budgets,
@@ -609,6 +967,8 @@ def observe_triepilot_accept_lengths(
     *,
     alpha: float = 0.20,
 ) -> list[float]:
+    if _ablation_enabled("no_history"):
+        return [0.0 for _ in reqs]
     values = _to_plain_list(accept_lens)
     alpha = min(1.0, max(0.0, float(alpha)))
     updated: list[float] = []
@@ -635,6 +995,8 @@ def observe_triepilot_strategy_feedback(
     alpha: float = 0.20,
     step_id: int = 0,
 ) -> None:
+    if _ablation_enabled("no_history") or _ablation_enabled("no_strategy_bank"):
+        return
     req_list = list(reqs)
     metadata = allocation_metadata or {}
     regime_ids = _to_plain_list(metadata.get("regime_ids"))

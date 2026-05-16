@@ -35,6 +35,8 @@ class A100LaunchScriptTest(unittest.TestCase):
         self.assertIn("--triepilot-shape-buckets", text)
         self.assertIn("TRIEPILOT_SHAPE_BUCKET_MODE", text)
         self.assertIn("--triepilot-shape-bucket-mode", text)
+        self.assertIn("NGRAM_MATCH_TYPE", text)
+        self.assertIn("--speculative-ngram-match-type", text)
 
     def test_session5_allocator_runner_covers_request_level_baselines(self):
         text = (
@@ -66,6 +68,13 @@ class A100LaunchScriptTest(unittest.TestCase):
         self.assertIn("MATERIALIZE_FILL_FILTERED", text)
         self.assertIn("--tokenizer-model", text)
         self.assertIn("--context-len", text)
+        self.assertIn("triepilot_wo_trie_features", text)
+        self.assertIn("triepilot_wo_history", text)
+        self.assertIn("triepilot_wo_serving_pressure", text)
+        self.assertIn("triepilot_wo_strategy_bank", text)
+        self.assertIn("TRIEPILOT_ABLATION_MODE", text)
+        self.assertIn('"ablation_modes":', text)
+        self.assertIn('"request_local_probe_count":', text)
 
     def test_a100_static_tiers_runner_covers_step1_budget_set(self):
         text = (
@@ -78,6 +87,21 @@ class A100LaunchScriptTest(unittest.TestCase):
         self.assertIn("notes.md", text)
         self.assertIn("output_throughput", text)
         self.assertIn("mean_tpot_ms", text)
+        self.assertIn("NGRAM_MATCH_TYPE", text)
+        self.assertIn("ngram_match_type", text)
+
+    def test_step1_static_tier_library_driver_supports_match_type_sweeps(self):
+        text = (
+            REPO_ROOT
+            / "scripts"
+            / "remote"
+            / "a100_step1_static_tier_library_driver.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("TRIEPILOT_STEP1_MATCH_TYPES", text)
+        self.assertIn("TRIEPILOT_STEP1_RUN_ID_PREFIX", text)
+        self.assertIn("NGRAM_MATCH_TYPE", text)
+        self.assertIn("ngram_match_type", text)
 
 
 if __name__ == "__main__":

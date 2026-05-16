@@ -127,10 +127,31 @@ run_method() {
   local allocation_policy
   local draft_tokens
   local batch_budget
+  local ablation_mode=""
   if [[ "${method}" =~ ^batch_global_budget([0-9]+)$ ]]; then
     allocation_policy="custom"
     draft_tokens="${BASH_REMATCH[1]}"
     batch_budget=""
+  elif [ "${method}" = "triepilot_wo_trie_features" ]; then
+    allocation_policy="triepilot_allocation"
+    draft_tokens="${MAX_DRAFT_TOKENS}"
+    batch_budget="${b_batch}"
+    ablation_mode="no_trie_features"
+  elif [ "${method}" = "triepilot_wo_history" ]; then
+    allocation_policy="triepilot_allocation"
+    draft_tokens="${MAX_DRAFT_TOKENS}"
+    batch_budget="${b_batch}"
+    ablation_mode="no_history"
+  elif [ "${method}" = "triepilot_wo_serving_pressure" ]; then
+    allocation_policy="triepilot_allocation"
+    draft_tokens="${MAX_DRAFT_TOKENS}"
+    batch_budget="${b_batch}"
+    ablation_mode="no_serving_pressure"
+  elif [ "${method}" = "triepilot_wo_strategy_bank" ]; then
+    allocation_policy="triepilot_allocation"
+    draft_tokens="${MAX_DRAFT_TOKENS}"
+    batch_budget="${b_batch}"
+    ablation_mode="no_strategy_bank"
   else
     allocation_policy="${method}"
     draft_tokens="${MAX_DRAFT_TOKENS}"
@@ -155,6 +176,11 @@ run_method() {
   export TRIEPILOT_RANDOM_SEED="${SEED}"
   export TRIEPILOT_SHAPE_BUCKETS
   export TRIEPILOT_SHAPE_BUCKET_MODE
+  if [ -n "${ablation_mode}" ]; then
+    export TRIEPILOT_ABLATION_MODE="${ablation_mode}"
+  else
+    unset TRIEPILOT_ABLATION_MODE || true
+  fi
   export CUDA_GRAPH_MAX_BS
   export MAX_RUNNING_REQUESTS
   export FLASHINFER_WORKSPACE_BASE="${method_dir}/flashinfer_cache"
@@ -292,6 +318,11 @@ for method in methods:
     heterogeneous_events = 0
     strategy_hit_rates = []
     controller_times = []
+    recovery_probe_counts = []
+    request_local_probe_counts = []
+    request_local_probe_events = []
+    positive_observation_means = []
+    max_observed_gains = []
     for event in events:
         budgets = event.get("allocated_budgets", [])
         if len(set(budgets)) > 1:
@@ -300,6 +331,18 @@ for method in methods:
             raise SystemExit(f"{method} exceeded B_batch in {trace_path}: {budgets}")
         strategy_hit_rates.append(float(event.get("strategy_bank_hit_rate", 0.0)))
         controller_times.append(float(event.get("controller_time_us", 0.0)))
+        recovery_probe_counts.append(float(event.get("recovery_probe_count", 0.0)))
+        request_local_probe_count = float(event.get("request_local_probe_count", 0.0))
+        request_local_probe_counts.append(request_local_probe_count)
+        request_local_probe_events.append(1.0 if request_local_probe_count > 0 else 0.0)
+        observations = event.get("positive_observations", []) or []
+        if observations:
+            positive_observation_means.append(
+                sum(float(value) for value in observations) / len(observations)
+            )
+        observed_gains = event.get("max_observed_gain_per_node", []) or []
+        if observed_gains:
+            max_observed_gains.append(max(float(value) for value in observed_gains))
     first_event = events[0] if events else {}
     row = {
         "left_dataset": os.environ["LEFT_DATASET"],
@@ -310,6 +353,7 @@ for method in methods:
         "max_running_requests": int(os.environ["MAX_RUNNING_REQUESTS"]),
         "method": method,
         "allocation_policy": first_event.get("allocation_policy", ""),
+        "ablation_modes": ",".join(first_event.get("ablation_modes", [])),
         "batch_budget": first_event.get("batch_budget", ""),
         "server_draft_tokens": max(first_event.get("allocated_budgets", [0]) or [0]),
         "trace_events": len(events),
@@ -337,6 +381,11 @@ for method in methods:
         "mean_match_depth": mean([float(event.get("match_depth", 0)) for event in events]),
         "mean_accept_len_ema": mean([float(event.get("accept_len_ema", 0)) for event in events]),
         "strategy_bank_hit_rate": mean(strategy_hit_rates),
+        "recovery_probe_count": sum(recovery_probe_counts),
+        "request_local_probe_count": sum(request_local_probe_counts),
+        "request_local_probe_event_ratio": mean(request_local_probe_events),
+        "mean_positive_observations": mean(positive_observation_means),
+        "max_observed_gain_per_node": max(max_observed_gains) if max_observed_gains else 0.0,
         "controller_overhead_p50_us": sorted(controller_times)[len(controller_times) // 2] if controller_times else 0.0,
         "controller_overhead_p99_us": sorted(controller_times)[min(len(controller_times) - 1, int(len(controller_times) * 0.99))] if controller_times else 0.0,
         "trace_path": str(trace_path),
@@ -365,12 +414,12 @@ notes = [
     f"Combo directory: `{combo_dir}`",
     f"Summary: `{summary_path}`",
     "",
-    "| method | out tok/s | mean TPOT ms | p99 TPOT ms | accepted/verified | wasted ratio | mean B | mean input tokens | shape pad | target us | graph-shape ok | hit rate |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| method | out tok/s | mean TPOT ms | p99 TPOT ms | accepted/verified | wasted ratio | mean B | mean input tokens | shape pad | target us | graph-shape ok | hit rate | local probes |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
 ]
 for row in rows:
     notes.append(
-        "| {method} | {out:.2f} | {tpot:.2f} | {p99:.2f} | {apv:.4f} | {wasted:.4f} | {mean_b:.2f} | {mean_input:.2f} | {shape_pad:.2f} | {target:.2f} | {shape:.2f} | {hit:.2f} |".format(
+        "| {method} | {out:.2f} | {tpot:.2f} | {p99:.2f} | {apv:.4f} | {wasted:.4f} | {mean_b:.2f} | {mean_input:.2f} | {shape_pad:.2f} | {target:.2f} | {shape:.2f} | {hit:.2f} | {local_probes:.0f} |".format(
             method=row["method"],
             out=row["output_throughput"],
             tpot=row["mean_tpot_ms"],
@@ -383,6 +432,7 @@ for row in rows:
             target=row["mean_target_forward_time_us"],
             shape=row["cuda_graph_token_shape_ok_ratio"],
             hit=row["strategy_bank_hit_rate"],
+            local_probes=row["request_local_probe_count"],
         )
     )
 Path(os.environ["NOTES_PATH"]).write_text("\n".join(notes) + "\n", encoding="utf-8")

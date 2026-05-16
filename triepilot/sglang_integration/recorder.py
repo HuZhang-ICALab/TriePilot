@@ -154,6 +154,9 @@ class TriePilotNgramRecorder:
         strategy_bank_hits = _bool_vector(
             allocation_metadata.get("strategy_bank_hits", [])
         )
+        request_local_probe_flags = _bool_vector(
+            allocation_metadata.get("request_local_probe_flags", [])
+        )
         event = {
             "time_ns": time.time_ns(),
             "event": "ngram_step",
@@ -207,6 +210,9 @@ class TriePilotNgramRecorder:
             "filled_nodes_mean": _mean(filled_node_counts),
             "can_run_cuda_graph": bool(can_run_cuda_graph),
             "regime_ids": _to_plain_list(allocation_metadata.get("regime_ids", [])),
+            "ablation_modes": _to_plain_list(
+                allocation_metadata.get("ablation_modes", [])
+            ),
             "strategy_bank_hits": strategy_bank_hits,
             "strategy_bank_hit_rate": _mean(
                 [1.0 if hit else 0.0 for hit in strategy_bank_hits]
@@ -216,6 +222,39 @@ class TriePilotNgramRecorder:
             ),
             "preferred_budgets": _int_vector(
                 allocation_metadata.get("preferred_budgets", [])
+            ),
+            "budget_caps": _int_vector(allocation_metadata.get("budget_caps", [])),
+            "marginal_upgrade_steps": _int_vector(
+                allocation_metadata.get("marginal_upgrade_steps", [])
+            ),
+            "marginal_upgrade_gains": _float_vector(
+                allocation_metadata.get("marginal_upgrade_gains", [])
+            ),
+            "recovery_probe_flags": _bool_vector(
+                allocation_metadata.get("recovery_probe_flags", [])
+            ),
+            "recovery_probe_count": sum(
+                1
+                for flag in _bool_vector(
+                    allocation_metadata.get("recovery_probe_flags", [])
+                )
+                if flag
+            ),
+            "request_local_probe_flags": request_local_probe_flags,
+            "request_local_probe_count": sum(
+                1 for flag in request_local_probe_flags if flag
+            ),
+            "request_local_probe_counts": _int_vector(
+                allocation_metadata.get("request_local_probe_counts", [])
+            ),
+            "positive_observations": _int_vector(
+                allocation_metadata.get("positive_observations", [])
+            ),
+            "max_observed_gain_per_node": _float_vector(
+                allocation_metadata.get("max_observed_gain_per_node", [])
+            ),
+            "zero_gain_streaks": _int_vector(
+                allocation_metadata.get("zero_gain_streaks", [])
             ),
             "strategy_confidences": _float_vector(
                 allocation_metadata.get("strategy_confidences", [])

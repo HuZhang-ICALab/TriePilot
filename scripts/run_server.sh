@@ -84,6 +84,7 @@ if [ "${SPECULATION}" = "ngram" ]; then
   MATCH_WINDOW="${MATCH_WINDOW:-12}"
   BFS_BREADTH="${BFS_BREADTH:-4}"
   BRANCH_LENGTH="${BRANCH_LENGTH:-18}"
+  NGRAM_MATCH_TYPE="${NGRAM_MATCH_TYPE:-BFS}"
   if [ "${MATCH_WINDOW}" -ge "${BRANCH_LENGTH}" ]; then
     echo "MATCH_WINDOW (${MATCH_WINDOW}) must be less than BRANCH_LENGTH (${BRANCH_LENGTH}) for SGLang NGRAM." >&2
     exit 1
@@ -94,6 +95,7 @@ if [ "${SPECULATION}" = "ngram" ]; then
     --speculative-ngram-max-match-window-size "${MATCH_WINDOW}"
     --speculative-ngram-max-bfs-breadth "${BFS_BREADTH}"
     --speculative-ngram-branch-length "${BRANCH_LENGTH}"
+    --speculative-ngram-match-type "${NGRAM_MATCH_TYPE}"
   )
 elif [ "${SPECULATION}" != "none" ]; then
   echo "Unsupported SPECULATION=${SPECULATION}; expected none or ngram" >&2

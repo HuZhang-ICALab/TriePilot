@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -293,7 +294,7 @@ class SglangTriePilotTelemetryTest(unittest.TestCase):
         self.assertAlmostEqual(reqs[0].triepilot_accept_len_ema, 1.5)
         self.assertAlmostEqual(reqs[1].triepilot_accept_len_ema, 0.5)
 
-    def test_triepilot_allocator_uses_regime_strategy_bank_and_returns_metadata(self):
+    def test_triepilot_allocator_uses_marginal_small_upgrades(self):
         module = load_budget_module()
 
         class Req:
@@ -336,16 +337,418 @@ class SglangTriePilotTelemetryTest(unittest.TestCase):
             return_metadata=True,
         )
 
-        self.assertEqual(budgets, [16, 0, 8])
-        self.assertEqual(active_lengths, [16, 1, 8])
+        self.assertEqual(budgets, [4, 0, 2])
+        self.assertEqual(active_lengths, [4, 1, 2])
         self.assertEqual(metadata["regime_ids"][0], "R_high_match_low_entropy_high_accept_high_load")
         self.assertEqual(metadata["regime_ids"][1], "R_low_match_low_entropy_low_accept_high_load")
         self.assertEqual(metadata["preferred_budgets"], [16, 0, 8])
+        self.assertEqual(metadata["budget_caps"], [4, 0, 2])
+        self.assertGreater(metadata["marginal_upgrade_gains"][0], 0.0)
+        self.assertEqual(metadata["marginal_upgrade_gains"][1], 0.0)
         self.assertFalse(any(metadata["strategy_bank_hits"]))
         self.assertGreater(
             metadata["expected_gain_per_node"][0],
             metadata["expected_gain_per_node"][2],
         )
+
+    def test_triepilot_marginal_allocator_distributes_first_tier_before_second(self):
+        module = load_budget_module()
+
+        class Req:
+            def __init__(self, accept_ema):
+                self.triepilot_accept_len_ema = accept_ema
+
+        reqs = [Req(3.0), Req(3.0), Req(1.0)]
+        structural_features = [
+            {
+                "match_depth": 6,
+                "candidate_count": 1,
+                "branch_entropy": 0.0,
+                "top_branch_ratio": 1.0,
+                "filled_nodes": 16,
+            },
+            {
+                "match_depth": 6,
+                "candidate_count": 1,
+                "branch_entropy": 0.0,
+                "top_branch_ratio": 1.0,
+                "filled_nodes": 16,
+            },
+            {
+                "match_depth": 2,
+                "candidate_count": 4,
+                "branch_entropy": 1.5,
+                "top_branch_ratio": 0.4,
+                "filled_nodes": 16,
+            },
+        ]
+
+        budgets, active_lengths, metadata = module.resolve_triepilot_draft_budgets(
+            reqs,
+            default_budget=16,
+            allocation_policy="triepilot_allocation",
+            batch_budget=4,
+            structural_features=structural_features,
+            strategy_bank=module.TriePilotStrategyBank(max_budget=16),
+            return_metadata=True,
+        )
+
+        self.assertEqual(budgets, [2, 2, 0])
+        self.assertEqual(active_lengths, [2, 2, 1])
+        self.assertEqual(metadata["marginal_upgrade_steps"], [1, 1, 0])
+
+    def test_triepilot_ablation_mode_removes_trie_features_from_regime(self):
+        module = load_budget_module()
+
+        class Req:
+            triepilot_accept_len_ema = 3.0
+
+        structural_features = [
+            {
+                "match_depth": 6,
+                "candidate_count": 1,
+                "branch_entropy": 0.0,
+                "top_branch_ratio": 1.0,
+                "filled_nodes": 16,
+            }
+        ]
+
+        with patch.dict(
+            os.environ,
+            {"TRIEPILOT_ABLATION_MODE": "no_trie_features"},
+            clear=False,
+        ):
+            budgets, active_lengths, metadata = module.resolve_triepilot_draft_budgets(
+                [Req()],
+                default_budget=16,
+                allocation_policy="triepilot_allocation",
+                batch_budget=16,
+                structural_features=structural_features,
+                strategy_bank=module.TriePilotStrategyBank(max_budget=16),
+                return_metadata=True,
+            )
+
+        self.assertEqual(budgets, [0])
+        self.assertEqual(active_lengths, [1])
+        self.assertEqual(metadata["regime_ids"], ["R_low_match_low_entropy_high_accept_low_load"])
+        self.assertEqual(metadata["ablation_modes"], ["no_trie_features"])
+
+    def test_triepilot_ablation_mode_removes_history_from_regime_and_penalty(self):
+        module = load_budget_module()
+
+        class Req:
+            triepilot_accept_len_ema = 3.0
+            triepilot_negative_gain_count = 10
+
+        structural_features = [
+            {
+                "match_depth": 6,
+                "candidate_count": 1,
+                "branch_entropy": 0.0,
+                "top_branch_ratio": 1.0,
+                "filled_nodes": 16,
+            }
+        ]
+
+        with patch.dict(
+            os.environ,
+            {"TRIEPILOT_ABLATION_MODE": "no_history"},
+            clear=False,
+        ):
+            budgets, active_lengths, metadata = module.resolve_triepilot_draft_budgets(
+                [Req()],
+                default_budget=16,
+                allocation_policy="triepilot_allocation",
+                batch_budget=16,
+                structural_features=structural_features,
+                strategy_bank=module.TriePilotStrategyBank(max_budget=16),
+                return_metadata=True,
+            )
+            emas = module.observe_triepilot_accept_lengths([Req()], [4], alpha=0.5)
+
+        self.assertEqual(budgets, [0])
+        self.assertEqual(active_lengths, [1])
+        self.assertEqual(metadata["regime_ids"], ["R_high_match_low_entropy_low_accept_low_load"])
+        self.assertEqual(metadata["expected_gain_per_node"], [0.15])
+        self.assertEqual(emas, [0.0])
+
+    def test_triepilot_ablation_mode_removes_serving_pressure_from_regime(self):
+        module = load_budget_module()
+
+        class Req:
+            triepilot_accept_len_ema = 0.0
+
+        structural_features = [
+            {
+                "match_depth": 2,
+                "candidate_count": 4,
+                "branch_entropy": 1.5,
+                "top_branch_ratio": 0.4,
+                "filled_nodes": 16,
+            }
+        ] * 3
+
+        with patch.dict(
+            os.environ,
+            {"TRIEPILOT_ABLATION_MODE": "no_serving_pressure"},
+            clear=False,
+        ):
+            _, _, metadata = module.resolve_triepilot_draft_budgets(
+                [Req(), Req(), Req()],
+                default_budget=16,
+                allocation_policy="triepilot_allocation",
+                batch_budget=16,
+                structural_features=structural_features,
+                strategy_bank=module.TriePilotStrategyBank(max_budget=16),
+                return_metadata=True,
+            )
+
+        self.assertTrue(all(regime.endswith("_low_load") for regime in metadata["regime_ids"]))
+        self.assertEqual(metadata["ablation_modes"], ["no_serving_pressure"])
+
+    def test_triepilot_ablation_mode_disables_strategy_bank_reuse(self):
+        module = load_budget_module()
+
+        class Req:
+            triepilot_accept_len_ema = 3.0
+
+        structural_features = [
+            {
+                "match_depth": 6,
+                "candidate_count": 1,
+                "branch_entropy": 0.0,
+                "top_branch_ratio": 1.0,
+                "filled_nodes": 16,
+            }
+        ]
+        bank = module.TriePilotStrategyBank(max_budget=16)
+        record, _ = bank.lookup("R_high_match_low_entropy_high_accept_low_load")
+        record.preferred_budget = 0
+        record.expected_gain_per_node = 0.01
+
+        with patch.dict(
+            os.environ,
+            {"TRIEPILOT_ABLATION_MODE": "no_strategy_bank"},
+            clear=False,
+        ):
+            budgets, active_lengths, metadata = module.resolve_triepilot_draft_budgets(
+                [Req()],
+                default_budget=16,
+                allocation_policy="triepilot_allocation",
+                batch_budget=16,
+                structural_features=structural_features,
+                strategy_bank=bank,
+                return_metadata=True,
+            )
+            module.observe_triepilot_strategy_feedback(
+                [Req()],
+                strategy_bank=bank,
+                allocation_metadata=metadata,
+                requested_draft_budgets=budgets,
+                accept_lens=[4],
+                alpha=0.5,
+            )
+
+        self.assertEqual(budgets, [4])
+        self.assertEqual(active_lengths, [4])
+        self.assertEqual(metadata["strategy_bank_hits"], [False])
+        self.assertEqual(metadata["ablation_modes"], ["no_strategy_bank"])
+        self.assertEqual(record.expected_gain_per_node, 0.01)
+
+    def test_selective_recovery_probe_requires_positive_stable_regime(self):
+        module = load_budget_module()
+
+        class Req:
+            triepilot_accept_len_ema = 0.0
+
+        structural_features = [
+            {
+                "match_depth": 6,
+                "candidate_count": 1,
+                "branch_entropy": 0.0,
+                "top_branch_ratio": 1.0,
+                "filled_nodes": 16,
+            }
+        ]
+        bank = module.TriePilotStrategyBank(max_budget=16)
+        regime_id = "R_high_match_low_entropy_low_accept_low_load"
+        record, _ = bank.lookup(regime_id)
+        record.preferred_budget = 0
+        record.expected_gain_per_node = 0.01
+        record.positive_observations = 1
+        record.max_observed_gain_per_node = 0.75
+
+        with patch.dict(
+            os.environ,
+            {
+                "TRIEPILOT_SELECTIVE_RECOVERY": "1",
+                "TRIEPILOT_SELECTIVE_RECOVERY_COOLDOWN_STEPS": "4",
+            },
+            clear=False,
+        ):
+            budgets, active_lengths, metadata = module.resolve_triepilot_draft_budgets(
+                [Req()],
+                default_budget=16,
+                allocation_policy="triepilot_allocation",
+                batch_budget=16,
+                structural_features=structural_features,
+                strategy_bank=bank,
+                step_id=10,
+                return_metadata=True,
+            )
+            cooled_budgets, _, cooled_metadata = module.resolve_triepilot_draft_budgets(
+                [Req()],
+                default_budget=16,
+                allocation_policy="triepilot_allocation",
+                batch_budget=16,
+                structural_features=structural_features,
+                strategy_bank=bank,
+                step_id=11,
+                return_metadata=True,
+            )
+
+        self.assertEqual(budgets, [2])
+        self.assertEqual(active_lengths, [2])
+        self.assertEqual(metadata["budget_caps"], [2])
+        self.assertEqual(metadata["recovery_probe_flags"], [True])
+        self.assertEqual(metadata["positive_observations"], [1])
+        self.assertEqual(metadata["max_observed_gain_per_node"], [0.75])
+        self.assertEqual(cooled_budgets, [0])
+        self.assertEqual(cooled_metadata["recovery_probe_flags"], [False])
+
+    def test_selective_recovery_probe_allows_high_match_branchy_positive_regime(self):
+        module = load_budget_module()
+
+        class Req:
+            triepilot_accept_len_ema = 0.0
+
+        structural_features = [
+            {
+                "match_depth": 6,
+                "candidate_count": 4,
+                "branch_entropy": 1.4,
+                "top_branch_ratio": 0.4,
+                "filled_nodes": 16,
+            }
+        ]
+        bank = module.TriePilotStrategyBank(max_budget=16)
+        regime_id = "R_high_match_high_branch_low_accept_low_load"
+        record, _ = bank.lookup(regime_id)
+        record.preferred_budget = 0
+        record.expected_gain_per_node = 0.01
+        record.positive_observations = 2
+        record.max_observed_gain_per_node = 0.50
+
+        with patch.dict(
+            os.environ,
+            {
+                "TRIEPILOT_SELECTIVE_RECOVERY": "1",
+                "TRIEPILOT_SELECTIVE_RECOVERY_COOLDOWN_STEPS": "4",
+            },
+            clear=False,
+        ):
+            budgets, _, metadata = module.resolve_triepilot_draft_budgets(
+                [Req()],
+                default_budget=16,
+                allocation_policy="triepilot_allocation",
+                batch_budget=16,
+                structural_features=structural_features,
+                strategy_bank=bank,
+                step_id=10,
+                return_metadata=True,
+            )
+
+        self.assertEqual(budgets, [2])
+        self.assertEqual(metadata["regime_ids"], [regime_id])
+        self.assertEqual(metadata["recovery_probe_flags"], [True])
+
+    def test_selective_recovery_probe_disabled_by_default(self):
+        module = load_budget_module()
+
+        class Req:
+            triepilot_accept_len_ema = 0.0
+
+        structural_features = [
+            {
+                "match_depth": 6,
+                "candidate_count": 1,
+                "branch_entropy": 0.0,
+                "top_branch_ratio": 1.0,
+                "filled_nodes": 16,
+            }
+        ]
+        bank = module.TriePilotStrategyBank(max_budget=16)
+        record, _ = bank.lookup("R_high_match_low_entropy_low_accept_low_load")
+        record.preferred_budget = 0
+        record.expected_gain_per_node = 0.01
+        record.positive_observations = 1
+        record.max_observed_gain_per_node = 0.75
+
+        with patch.dict(os.environ, {"TRIEPILOT_SELECTIVE_RECOVERY": "0"}, clear=False):
+            budgets, _, metadata = module.resolve_triepilot_draft_budgets(
+                [Req()],
+                default_budget=16,
+                allocation_policy="triepilot_allocation",
+                batch_budget=16,
+                structural_features=structural_features,
+                strategy_bank=bank,
+                step_id=10,
+                return_metadata=True,
+            )
+
+        self.assertEqual(budgets, [0])
+        self.assertEqual(metadata["budget_caps"], [0])
+        self.assertEqual(metadata["recovery_probe_flags"], [False])
+
+    def test_request_local_recovery_probes_collapsed_high_match_request(self):
+        module = load_budget_module()
+
+        class Req:
+            triepilot_accept_len_ema = 0.0
+
+        req = Req()
+        structural_features = [
+            {
+                "match_depth": 6,
+                "candidate_count": 1,
+                "branch_entropy": 0.0,
+                "top_branch_ratio": 1.0,
+                "filled_nodes": 16,
+            }
+        ]
+        bank = module.TriePilotStrategyBank(max_budget=16)
+        record, _ = bank.lookup("R_high_match_low_entropy_low_accept_low_load")
+        record.preferred_budget = 0
+        record.expected_gain_per_node = 0.01
+        record.positive_observations = 0
+        record.max_observed_gain_per_node = 0.0
+
+        with patch.dict(
+            os.environ,
+            {
+                "TRIEPILOT_REQUEST_LOCAL_RECOVERY": "1",
+                "TRIEPILOT_REQUEST_LOCAL_RECOVERY_PROBE_BUDGET": "2",
+                "TRIEPILOT_REQUEST_LOCAL_RECOVERY_MAX_PROBES": "2",
+            },
+            clear=False,
+        ):
+            budgets, active_lengths, metadata = module.resolve_triepilot_draft_budgets(
+                [req],
+                default_budget=16,
+                allocation_policy="triepilot_allocation",
+                batch_budget=16,
+                structural_features=structural_features,
+                strategy_bank=bank,
+                step_id=10,
+                return_metadata=True,
+            )
+
+        self.assertEqual(budgets, [2])
+        self.assertEqual(active_lengths, [2])
+        self.assertEqual(metadata["budget_caps"], [2])
+        self.assertEqual(metadata["request_local_probe_flags"], [True])
+        self.assertEqual(metadata["request_local_probe_counts"], [1])
+        self.assertEqual(metadata["recovery_probe_flags"], [False])
 
     def test_strategy_bank_observer_updates_gain_and_negative_counts(self):
         module = load_budget_module()
@@ -375,6 +778,12 @@ class SglangTriePilotTelemetryTest(unittest.TestCase):
         )
         self.assertEqual(reqs[0].triepilot_negative_gain_count, 0)
         self.assertEqual(reqs[1].triepilot_negative_gain_count, 1)
+        self.assertEqual(
+            bank.records[
+                "R_high_match_low_entropy_high_accept_low_load"
+            ].positive_observations,
+            1,
+        )
 
     def test_recorder_tracks_budget_vectors_and_verify_token_count(self):
         module = load_recorder_module()
@@ -536,6 +945,15 @@ class SglangTriePilotTelemetryTest(unittest.TestCase):
                     "strategy_bank_hits": [True, False],
                     "expected_gain_per_node": [0.7, 0.1],
                     "preferred_budgets": [8, 0],
+                    "budget_caps": [4, 0],
+                    "marginal_upgrade_steps": [2, 0],
+                    "marginal_upgrade_gains": [0.9, 0.0],
+                    "recovery_probe_flags": [True, False],
+                    "request_local_probe_flags": [False, True],
+                    "request_local_probe_counts": [0, 1],
+                    "positive_observations": [3, 0],
+                    "max_observed_gain_per_node": [0.75, 0.0],
+                    "zero_gain_streaks": [0, 2],
                     "strategy_confidences": [0.8, 0.2],
                     "exploration_flags": [False, True],
                 },
@@ -560,6 +978,17 @@ class SglangTriePilotTelemetryTest(unittest.TestCase):
         self.assertEqual(event["strategy_bank_hit_rate"], 0.5)
         self.assertEqual(event["expected_gain_per_node"], [0.7, 0.1])
         self.assertEqual(event["preferred_budgets"], [8, 0])
+        self.assertEqual(event["budget_caps"], [4, 0])
+        self.assertEqual(event["marginal_upgrade_steps"], [2, 0])
+        self.assertEqual(event["marginal_upgrade_gains"], [0.9, 0.0])
+        self.assertEqual(event["recovery_probe_flags"], [True, False])
+        self.assertEqual(event["recovery_probe_count"], 1)
+        self.assertEqual(event["request_local_probe_flags"], [False, True])
+        self.assertEqual(event["request_local_probe_count"], 1)
+        self.assertEqual(event["request_local_probe_counts"], [0, 1])
+        self.assertEqual(event["positive_observations"], [3, 0])
+        self.assertEqual(event["max_observed_gain_per_node"], [0.75, 0.0])
+        self.assertEqual(event["zero_gain_streaks"], [0, 2])
         self.assertEqual(event["exploration_flags"], [False, True])
         self.assertEqual(event["controller_time_us"], 7.0)
 
